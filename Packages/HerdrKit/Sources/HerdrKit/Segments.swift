@@ -217,6 +217,37 @@ public enum TerminalSegmenter {
         return out.joined(separator: "\n")
     }
 
+    // MARK: Display
+
+    /// Prose the agent hard-wrapped at its pane width, rejoined into one line
+    /// per paragraph so the phone can wrap it at its own width instead of
+    /// wrapping the Mac's lines a second time. Lines that weren't wrapped
+    /// (short ones, list items, blank lines) keep their breaks; styling is kept.
+    /// Meant for `.message` segments, which hold no code.
+    public static func reflowed(_ lines: [StyledLine], columns: Int) -> [StyledLine] {
+        var out: [StyledLine] = []
+        var joinNext = false
+        for (k, line) in lines.enumerated() {
+            let text = line.plainText
+            if joinNext, var last = out.popLast() {
+                last = last.trimmingTrailingSpaces()
+                let lastText = last.plainText
+                // A URL broken across the lines rejoins without a space.
+                let tail = String(lastText.split(separator: " ").last ?? "")
+                let joinsURL = tail.contains("://")
+                    && LinkDetector.continuation(of: tail, lineLength: lastText.count, in: text, columns: nil) != nil
+                if !joinsURL { last.runs.append(StyledRun(text: " ", style: TermStyle())) }
+                last.runs += line.droppingLeadingSpaces().runs
+                out.append(last)
+            } else {
+                out.append(line)
+            }
+            // Decided on the lines as the agent printed them, before joining.
+            joinNext = k + 1 < lines.count && wraps(text, into: lines[k + 1].plainText, width: columns)
+        }
+        return out
+    }
+
     /// Greedy wrapping broke `line` here if the next line's first word wouldn't have fit.
     static func wraps(_ line: String, into next: String, width: Int) -> Bool {
         let nextTrimmed = next.drop(while: { $0 == " " })
@@ -233,5 +264,35 @@ public enum TerminalSegmenter {
 
     private static func trimTrailing(_ s: String) -> String {
         String(s.reversed().drop(while: { $0 == " " }).reversed())
+    }
+}
+
+extension StyledLine {
+    func droppingLeadingSpaces() -> StyledLine {
+        var runs = self.runs
+        while let first = runs.first {
+            let trimmed = String(first.text.drop(while: { $0 == " " }))
+            if trimmed.isEmpty {
+                runs.removeFirst()
+            } else {
+                runs[0].text = trimmed
+                break
+            }
+        }
+        return StyledLine(runs: runs)
+    }
+
+    func trimmingTrailingSpaces() -> StyledLine {
+        var runs = self.runs
+        while let last = runs.last {
+            let trimmed = String(last.text.reversed().drop(while: { $0 == " " }).reversed())
+            if trimmed.isEmpty {
+                runs.removeLast()
+            } else {
+                runs[runs.count - 1].text = trimmed
+                break
+            }
+        }
+        return StyledLine(runs: runs)
     }
 }

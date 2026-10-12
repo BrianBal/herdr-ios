@@ -131,10 +131,14 @@ final class TerminalModel {
         let agent = agentPane
         segments = await Task.detached(priority: .userInitiated) {
             TerminalSegmenter.segment(lines, columns: pane, agentPane: agent).map { seg in
-                RenderedSegment(id: seg.id, kind: seg.kind,
-                                text: TerminalRenderer.render(seg.lines.fittingRules(to: columns), fontSize: size,
-                                                              paneColumns: pane),
-                                copyText: seg.copyText)
+                // When wrapping to the phone, undo the agent's wrapping at the Mac's width
+                // first, so prose wraps once (here) instead of twice.
+                var shown = seg.lines
+                if seg.kind == .message, columns != nil, let pane { shown = TerminalSegmenter.reflowed(shown, columns: pane) }
+                return RenderedSegment(id: seg.id, kind: seg.kind,
+                                       text: TerminalRenderer.render(shown.fittingRules(to: columns), fontSize: size,
+                                                                     paneColumns: pane),
+                                       copyText: seg.copyText)
             }
         }.value
     }

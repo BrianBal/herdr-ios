@@ -357,3 +357,41 @@ import Testing
         #expect(segs.first?.copyText == "Pages are live at https://macmini01.tailnet01.ts.net/product-health-jim9.html for you.")
     }
 }
+
+@Suite struct ReflowTests {
+    @Test func rejoinsWrappedProseKeepingStyle() {
+        let segs = TerminalSegmenter.segment(ANSIParser.parse(SegmenterTests.claude), columns: 60)
+        let lines = TerminalSegmenter.reflowed(segs[0].lines, columns: 60)
+        #expect(lines.map(\.plainText) == [
+            "⏺ jim9 is trained and draws real dashboards. On your example its page has every number bound.",
+            "  See it:",
+            "  - https://example.ts.net/page.html",
+        ])
+        // The marker keeps its color.
+        #expect(lines[0].runs[0].style.fg != .default)
+    }
+
+    @Test func listItemsAndBrokenURLs() {
+        let lines = ANSIParser.parse([
+            "⏺ Short intro line.",
+            "  - Done: jim9 is committed and all the",
+            "    tests pass.",
+            "  - Next: https://example.com/product-",
+            "    health.html",
+            "",
+            "  Bye.",
+        ].joined(separator: "\n"))
+        #expect(TerminalSegmenter.reflowed(lines, columns: 40).map(\.plainText) == [
+            "⏺ Short intro line.",
+            "  - Done: jim9 is committed and all the tests pass.",
+            "  - Next: https://example.com/product-health.html",
+            "",
+            "  Bye.",
+        ])
+    }
+
+    @Test func shortLinesAreLeftAlone() {
+        let lines = ANSIParser.parse("⏺ One.\n  Two.\n  Three.")
+        #expect(TerminalSegmenter.reflowed(lines, columns: 80).map(\.plainText) == ["⏺ One.", "  Two.", "  Three."])
+    }
+}

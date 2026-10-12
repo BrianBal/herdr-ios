@@ -12,7 +12,8 @@ Most valuable first.
 
 ## Reading on the phone
 
-- [ ] **Reflow agent prose**: agents hard-wrap replies at the Mac's pane width, and the phone wraps them again, so long answers look ragged. Rejoin wrapped paragraphs for display, the way the message copy button already does (`TerminalSegmenter.messageText`).
+- [x] **Reflow agent prose**: agents hard-wrap replies at the Mac's pane width, and the phone wraps them again, so long answers look ragged. Rejoin wrapped paragraphs for display, the way the message copy button already does (`TerminalSegmenter.messageText`). Done: `TerminalSegmenter.reflowed`.
+  - [ ] Follow-up: hanging indents, so a wrapped list item lines up under its text instead of column 0.
 - [ ] **Scrollback**: show more than the visible screen; pull up for earlier output (`pane.read` with `source: recent` / `lines`).
 
 ## Doing more from the phone
