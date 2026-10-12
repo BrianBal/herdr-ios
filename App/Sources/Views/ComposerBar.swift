@@ -60,6 +60,7 @@ struct ComposerBar: View {
         TextField(placeholder, text: $text, axis: .vertical)
             .lineLimit(1...8)
             .focused($focused)
+            .accessibilityIdentifier("composer-field")
             .submitLabel(.return)
             // Prose for agents; commands for shells, where "Echo" or an autocorrected flag breaks things.
             .textInputAutocapitalization(pane.hasAgent ? .sentences : .never)

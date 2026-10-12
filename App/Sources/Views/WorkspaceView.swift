@@ -440,6 +440,12 @@ struct PaneTerminalView: View {
                 }
                 .defaultScrollAnchor(.bottom)
                 .scrollIndicators(.visible)
+                // Reading the output puts the keyboard away: drag down into it (as in
+                // Messages) or tap the output. Links and buttons keep their taps, and
+                // the draft stays in the field.
+                .scrollDismissesKeyboard(.interactively)
+                .onTapGesture { dismissKeyboard() }
+                .accessibilityIdentifier("pane-output")
                 // Pull down at the top for earlier output.
                 .refreshable { await loadEarlier(proxy) }
                 }
@@ -712,4 +718,10 @@ private struct CopyButton: View {
         .accessibilityLabel(copied ? "Copied" : label)
         .sensoryFeedback(.success, trigger: copied) { _, new in new }
     }
+}
+
+/// Ends editing in whatever field has the keyboard.
+@MainActor
+func dismissKeyboard() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
 }
