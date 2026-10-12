@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_DENY_METHODS, type GatewayConfig } from "../src/config";
 import { createGateway, installedAgentKinds } from "../src/gateway";
+import { KeepAwake } from "../src/awake";
 import { HerdrSocket } from "../src/herdr";
 import { DeviceStore, Notifier, apnsJwt, apnsPayload, boardFrom, describe as describePush, type ApnsRequest } from "../src/push";
 import { generateKeyPairSync, verify } from "node:crypto";
@@ -85,6 +86,7 @@ const config: GatewayConfig = {
   allowed_users: ["me@example.com"],
   public_url: "",
   deny_methods: DEFAULT_DENY_METHODS,
+  keep_awake: false,
   push: { key_file: "", key_id: "", team_id: "TEAM", topic: "dev.test", notify: ["blocked", "done"], delay_ms: 40 },
 };
 const herdr = new HerdrSocket(sockPath);
@@ -466,5 +468,27 @@ describe("agents", () => {
     expect(r.result.type).toBe("agent_kinds");
     expect(Array.isArray(r.result.kinds)).toBe(true);
     c.close();
+  });
+});
+
+describe("keep awake", () => {
+  test("holds while busy, releases after the quiet window", () => {
+    let t = 0;
+    let started = 0;
+    let killed = 0;
+    const k = new KeepAwake({ quietMs: 100, now: () => t, start: () => (started++, { kill: () => killed++ }) });
+    k.update(false);
+    expect(k.holding).toBe(false);
+    k.update(true);
+    k.update(true);
+    expect([started, k.holding]).toEqual([1, true]);
+    t = 50;
+    k.update(false); // quiet, but not for long enough
+    expect(k.holding).toBe(true);
+    t = 160;
+    k.update(false);
+    expect([killed, k.holding]).toEqual([1, false]);
+    k.update(true);
+    expect(started).toBe(2);
   });
 });

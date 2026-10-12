@@ -44,6 +44,8 @@ export interface GatewayConfig {
   public_url: string;
   deny_methods: string[];
   push: PushConfig;
+  /** Hold a caffeinate assertion while agents are working or blocked. */
+  keep_awake: boolean;
 }
 
 export interface Paths {
@@ -122,6 +124,7 @@ export function loadConfig(paths: Paths): GatewayConfig {
       public_url: "",
       deny_methods: DEFAULT_DENY_METHODS,
       push: defaultPush(paths),
+      keep_awake: true,
     });
   }
   const raw = Bun.TOML.parse(readFileSync(paths.configFile, "utf8")) as Partial<GatewayConfig>;
@@ -136,6 +139,7 @@ export function loadConfig(paths: Paths): GatewayConfig {
     public_url: raw.public_url ?? "",
     deny_methods: raw.deny_methods ?? DEFAULT_DENY_METHODS,
     push: { ...defaultPush(paths), ...(raw.push ?? {}) },
+    keep_awake: raw.keep_awake ?? true,
   };
 }
 
@@ -181,6 +185,10 @@ public_url = ${JSON.stringify(c.public_url)}
 
 # Socket API methods the gateway refuses to forward.
 deny_methods = ${list(c.deny_methods)}
+
+# Keep the Mac from idle-sleeping while agents are working or waiting on you
+# (released two minutes after they're all done).
+keep_awake = ${c.keep_awake}
 
 # Push notifications through Apple (APNs), sent straight from this Mac.
 # Install a key with: sh bin/gateway-ctl push-key <AuthKey_XXXX.p8> <KEY_ID>

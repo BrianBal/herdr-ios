@@ -7,8 +7,8 @@ Most valuable first.
 - [x] **Git repo**: in git and on GitHub at [BrianBal/herdr-ios](https://github.com/BrianBal/herdr-ios).
 - [ ] **Test the untried push paths on the phone**:
   - [ ] Notification buttons: **Choose 1/2/3** on a blocked agent, **Reply** on a finished one.
-  - [ ] Live Activity started by the gateway (push-to-start) while the app is closed.
-  - [ ] Agents widget refreshed by widget push (check the gateway log for a rejected topic).
+  - [x] Live Activity started by the gateway (push-to-start): the log shows a push start at 03:30 on 10/12, after which the phone registered the new activity's token on its own.
+  - [x] Agents widget refreshed by widget push: the phone registered a widget token and Apple hasn't rejected any widget push (failures are logged).
 
 ## Reading on the phone
 
@@ -25,5 +25,5 @@ Most valuable first.
 
 ## Reliability
 
-- [ ] **Keep the Mac awake while agents work**: the gateway holds a `caffeinate` assertion only while something is working or blocked.
+- [x] **Keep the Mac awake while agents work**: the gateway holds `caffeinate -is` while any agent is working or blocked, released 2 minutes after they're all quiet (`keep_awake` in config.toml). A lid closed on battery still sleeps.
 - [ ] **TestFlight build**: no dependence on Xcode development signing or the cable; production APNs environment.

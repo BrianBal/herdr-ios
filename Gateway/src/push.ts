@@ -363,6 +363,8 @@ export interface NotifierOptions {
   log?: (msg: string) => void;
   pollMs?: number;
   timing?: Partial<NotifierTiming>;
+  /** Called on every poll with whether any agent is working or blocked. */
+  onBusy?: (busy: boolean) => void;
 }
 
 export function describe(status: string, pane: any, workspaceLabel: string | undefined): PushMessage {
@@ -477,6 +479,7 @@ export class Notifier {
     const changed = key !== this.boardKey;
     this.board = board;
     this.boardKey = key;
+    this.o.onBusy?.(boardIsBusy(board));
     if (boardIsBusy(board)) this.quietSince = undefined;
     else this.quietSince ??= Date.now();
     if (changed && this.primed) {

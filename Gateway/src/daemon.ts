@@ -6,6 +6,7 @@ import { loadConfig, resolvePaths } from "./config";
 import { createGateway } from "./gateway";
 import { HerdrSocket } from "./herdr";
 import { DeviceStore, Notifier, apnsFromConfig } from "./push";
+import { KeepAwake } from "./awake";
 
 const HERDR_GONE_EXIT_MS = 10 * 60 * 1000;
 const WATCHDOG_MS = 15 * 1000;
@@ -17,7 +18,9 @@ const config = loadConfig(paths);
 const herdr = new HerdrSocket(paths.socket);
 const apns = apnsFromConfig(config.push);
 const devices = new DeviceStore(paths.stateDir);
+const awake = config.keep_awake ? new KeepAwake({ log }) : undefined;
 const notifier = new Notifier({
+  onBusy: (busy) => awake?.update(busy),
   herdr,
   devices,
   sender: apns.client,
@@ -42,6 +45,7 @@ function shutdown(reason: string) {
   log(`shutting down: ${reason}`);
   server.stop(true);
   notifier.stop();
+  awake?.release();
   apns.client?.close();
   try {
     if (readFileSync(paths.pidFile, "utf8").trim() === String(process.pid)) rmSync(paths.pidFile);

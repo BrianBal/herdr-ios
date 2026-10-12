@@ -91,6 +91,12 @@ Notification payloads carry `pane_id`, `workspace_id` and `status`; categories
 are `AGENT_BLOCKED` (buttons send keys 1/2/3, or a text reply) and `AGENT_DONE`
 (text reply via `agent.prompt`).
 
+## Keeping the Mac awake
+
+While any agent is working or blocked, the gateway holds `caffeinate -is`
+(no idle sleep; no system sleep on AC power), tied to its own pid. It lets
+go two minutes after everything is quiet. Turn off with `keep_awake = false`.
+
 ## Development
 ```sh
 bun test                         # fake herdr socket; no live session needed
