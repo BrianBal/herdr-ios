@@ -1,13 +1,14 @@
 import HerdrKit
 import SwiftUI
 
-/// Creates a herdr workspace: an optional name and a starting folder, picked
-/// from folders the session's panes are already in, or typed.
+/// Creates a herdr workspace: an optional name, a starting folder (picked from
+/// folders the session's panes are already in, or typed), and optionally an
+/// agent to start in it with a first prompt.
 struct NewWorkspaceSheet: View {
     @Environment(HerdrStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     /// Returns whether it worked; the sheet stays open on failure.
-    let create: (_ label: String?, _ cwd: String?) async -> Bool
+    let create: (_ label: String?, _ cwd: String?, _ agent: String?, _ prompt: String?) async -> Bool
 
     @State private var name = ""
     @State private var folder: String?
@@ -15,6 +16,10 @@ struct NewWorkspaceSheet: View {
     @State private var useCustom = false
     @State private var creating = false
     @State private var error: String?
+    /// Agent kind to start; nil = just a shell. Defaults to the first installed agent.
+    @State private var agent: String?
+    @State private var agentChosen = false
+    @State private var prompt = ""
     @FocusState private var nameFocused: Bool
 
     /// Folders in use across the session, most used first.
@@ -72,6 +77,27 @@ struct NewWorkspaceSheet: View {
                             .keyboardType(.URL)
                     }
                 }
+                if !store.agentKinds.isEmpty {
+                    Section {
+                        Picker("Start", selection: $agent) {
+                            Text("Just a shell").tag(String?.none)
+                            ForEach(store.agentKinds, id: \.self) { kind in
+                                Text(AgentKind.displayName(kind)).tag(Optional(kind))
+                            }
+                        }
+                        .onChange(of: agent) { agentChosen = true }
+                        if agent != nil {
+                            TextField("First prompt (optional)", text: $prompt, axis: .vertical)
+                                .lineLimit(2...5)
+                        }
+                    } header: {
+                        Text("Agent")
+                    } footer: {
+                        if agent != nil {
+                            Text("The prompt is sent once the agent is ready. If it asks something first (like whether to trust the folder), answer it in the workspace and the prompt follows.")
+                        }
+                    }
+                }
                 if let error {
                     Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }
                 }
@@ -91,7 +117,10 @@ struct NewWorkspaceSheet: View {
                     }
                 }
             }
-            .onAppear { nameFocused = true }
+            .onAppear {
+                nameFocused = true
+                if !agentChosen { agent = store.agentKinds.first }
+            }
         }
         .presentationDetents([.medium, .large])
     }
@@ -122,7 +151,8 @@ struct NewWorkspaceSheet: View {
         let label = name.trimmingCharacters(in: .whitespaces)
         creating = true
         Task {
-            let ok = await create(label.isEmpty ? nil : label, resolvedCwd)
+            let firstPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ok = await create(label.isEmpty ? nil : label, resolvedCwd, agent, firstPrompt.isEmpty ? nil : firstPrompt)
             creating = false
             if ok {
                 dismiss()

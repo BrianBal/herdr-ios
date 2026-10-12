@@ -101,6 +101,7 @@ final class HerdrStore {
                 client = c
                 try await refresh(using: c)
                 generation += 1
+                agentKinds = (try? await c.agentKinds()) ?? agentKinds
                 phase = .connected
                 if let pushToken { await sendPushRegistration(pushToken, using: c) }
                 let topology = Task { await followTopology(c) }
@@ -289,6 +290,69 @@ final class HerdrStore {
         let problem: String?
     }
 
+    // MARK: Agents
+
+    /// Agents installed on the Mac that herdr can start (claude, codex, …).
+    private(set) var agentKinds: [String] = []
+
+    /// Starts an agent in a pane that's at its shell prompt. herdr wants a
+    /// unique name: the workspace's name, then "-2", "-3"… if taken. A first
+    /// prompt waits until the agent is ready, including while it waits on you
+    /// (e.g. "trust this folder?"), for up to two minutes.
+    func startAgent(_ kind: String, in paneId: String, nameHint: String, prompt: String?) async {
+        guard let client else {
+            actionError = "Not connected to herdr."
+            return
+        }
+        let base = Self.agentName(nameHint, kind: kind)
+        var started = false
+        var suffix = 1
+        // A brand-new pane's shell is still starting (profile scripts) for a moment.
+        let shellDeadline = Date.now.addingTimeInterval(20)
+        while !started, suffix <= 9 {
+            let name = suffix == 1 ? base : "\(base)-\(suffix)"
+            do {
+                try await client.send("agent.start", params: [
+                    "name": .string(name), "kind": .string(kind), "pane_id": .string(paneId),
+                ])
+                started = true
+            } catch GatewayError.server(code: "agent_name_taken", _) {
+                suffix += 1
+            } catch GatewayError.server(code: "agent_pane_busy", _) where Date.now < shellDeadline {
+                try? await Task.sleep(for: .seconds(1))
+            } catch {
+                actionError = "Couldn't start \(AgentKind.displayName(kind)): \(error.localizedDescription)"
+                return
+            }
+        }
+        guard started else {
+            actionError = "Couldn't find a free agent name for \(base)."
+            return
+        }
+        scheduleRefresh()
+        guard let prompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines), !prompt.isEmpty else { return }
+        let deadline = Date.now.addingTimeInterval(120)
+        while Date.now < deadline {
+            try? await Task.sleep(for: .seconds(1))
+            guard let c = self.client, let s = try? await c.snapshot() else { continue }
+            let status = s.agents.first { $0.paneId == paneId }?.agentStatus
+            if status == .idle || status == .done {
+                await perform("agent.prompt", ["target": .string(paneId), "text": .string(prompt)])
+                return
+            }
+        }
+        actionError = "\(AgentKind.displayName(kind)) didn't become ready, so your first prompt wasn't sent."
+    }
+
+    /// "html-gen" → "html-gen"; herdr names are simple identifiers.
+    private static func agentName(_ hint: String, kind: String) -> String {
+        let cleaned = hint.lowercased()
+            .map { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" ? $0 : "-" }
+            .reduce(into: "") { s, c in if !(c == "-" && s.hasSuffix("-")) { s.append(c) } }
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return cleaned.isEmpty ? kind : String(cleaned.prefix(40))
+    }
+
     // MARK: Workspaces
 
     @discardableResult
@@ -322,16 +386,16 @@ final class HerdrStore {
         }
     }
 
-    /// Returns the new workspace's id.
-    func createWorkspace(label: String?, cwd: String?) async -> String? {
+    /// Returns the new workspace and its first pane.
+    func createWorkspace(label: String?, cwd: String?) async -> (workspaceId: String, paneId: String)? {
         guard let client else {
             actionError = "Not connected to herdr."
             return nil
         }
         do {
-            let id = try await client.createWorkspace(label: label, cwd: cwd)
+            let created = try await client.createWorkspace(label: label, cwd: cwd)
             try? await refresh(using: client)
-            return id
+            return created
         } catch {
             actionError = error.localizedDescription
             return nil

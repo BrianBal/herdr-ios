@@ -98,7 +98,9 @@ public struct Agent: Sendable, Codable, Identifiable, Hashable {
 
     public var kindLabel: String { displayAgent ?? agent ?? "agent" }
     public var headline: String {
-        for candidate in [name, title, terminalTitleStripped] {
+        // The agent's own title (its current task) beats the name it was started
+        // under, which the app sets to the workspace's name.
+        for candidate in [title, terminalTitleStripped, name] {
             if let c = candidate?.trimmingCharacters(in: .whitespaces), !c.isEmpty { return c }
         }
         return kindLabel

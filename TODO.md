@@ -19,7 +19,8 @@ Most valuable first.
 
 ## Doing more from the phone
 
-- [ ] **Start an agent**: "New workspace → start Claude here", plus new tab / split (`agent.start`, `tab.create`, `pane.split`).
+- [x] **Start an agent**: New Workspace has an Agent picker (installed agents, via `gw.agent_kinds`) and an optional first prompt, sent once the agent is ready; shell panes get a ✨ "Start in this pane" menu.
+  - [ ] New tab / split from the phone (`tab.create`, `pane.split`).
 - [ ] **Quick prompts**: saved prompts and agent commands (`/compact`, "continue", "run the tests") as one-tap chips above the composer.
 
 ## Reliability

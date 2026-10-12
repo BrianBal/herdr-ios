@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_DENY_METHODS, type GatewayConfig } from "../src/config";
-import { createGateway } from "../src/gateway";
+import { createGateway, installedAgentKinds } from "../src/gateway";
 import { HerdrSocket } from "../src/herdr";
 import { DeviceStore, Notifier, apnsJwt, apnsPayload, boardFrom, describe as describePush, type ApnsRequest } from "../src/push";
 import { generateKeyPairSync, verify } from "node:crypto";
@@ -449,5 +449,22 @@ describe("push", () => {
     const r = await n.deliver({ title: "t", body: "b" });
     expect(r.failed).toBe(1);
     expect(devices.has(gone)).toBe(false);
+  });
+});
+
+describe("agents", () => {
+  test("installed kinds keep herdr's order and skip missing executables", () => {
+    const have = new Set(["codex", "claude", "zsh"]);
+    expect(installedAgentKinds((c) => (have.has(c) ? `/bin/${c}` : null))).toEqual(["claude", "codex"]);
+  });
+
+  test("gw.agent_kinds answers", async () => {
+    const c = new Client();
+    await c.open();
+    c.send({ id: 1, method: "gw.agent_kinds" });
+    const r = await c.next((m) => m.id === 1);
+    expect(r.result.type).toBe("agent_kinds");
+    expect(Array.isArray(r.result.kinds)).toBe(true);
+    c.close();
   });
 });

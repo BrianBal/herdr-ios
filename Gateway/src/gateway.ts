@@ -64,6 +64,17 @@ export interface GatewayOptions {
 
 const APNS_TOKEN = /^[0-9a-f]{64,200}$/i;
 
+/** Agent kinds herdr 0.9 can start (`herdr agent start --kind`), in a sensible menu order. */
+export const AGENT_KINDS = [
+  "claude", "codex", "gemini", "opencode", "cursor", "copilot", "amp", "droid", "qwen", "kimi", "kiro", "cline",
+  "pi", "devin", "agy", "omp", "mastracode", "grok", "hermes", "kilo", "qodercli", "letta", "maki", "muse",
+];
+
+/** The kinds whose executable is on this Mac's PATH. */
+export function installedAgentKinds(which: (cmd: string) => string | null = Bun.which): string[] {
+  return AGENT_KINDS.filter((k) => which(k));
+}
+
 function tokenMatches(expected: string, given: string | null): boolean {
   if (!given) return false;
   const a = Buffer.from(expected);
@@ -306,6 +317,10 @@ export function createGateway({ config, herdr, push, log = () => {} }: GatewayOp
         st.subscriptions.delete(sub);
         h.close();
         send(ws, { id, result: { type: "ok" } });
+        return;
+      }
+      case "gw.agent_kinds": {
+        send(ws, { id, result: { type: "agent_kinds", kinds: installedAgentKinds() } });
         return;
       }
       case "gw.push_register": {

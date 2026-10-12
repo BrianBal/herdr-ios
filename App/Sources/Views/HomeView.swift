@@ -50,9 +50,14 @@ struct HomeView: View {
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showNewWorkspace) {
-            NewWorkspaceSheet { label, cwd in
-                guard let id = await store.createWorkspace(label: label, cwd: cwd) else { return false }
-                open(.workspace(id, pane: nil))
+            NewWorkspaceSheet { label, cwd, agent, prompt in
+                guard let created = await store.createWorkspace(label: label, cwd: cwd) else { return false }
+                open(.workspace(created.workspaceId, pane: created.paneId))
+                if let agent {
+                    // Runs on after the sheet closes; progress shows in the workspace itself.
+                    let hint = label ?? cwd.map { ($0 as NSString).lastPathComponent } ?? agent
+                    Task { await store.startAgent(agent, in: created.paneId, nameHint: hint, prompt: prompt) }
+                }
                 return true
             }
         }

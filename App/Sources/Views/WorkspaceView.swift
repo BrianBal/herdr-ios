@@ -77,6 +77,22 @@ struct WorkspaceView: View {
         .navigationTitle(ws.label)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if let current, !current.hasAgent, !store.agentKinds.isEmpty {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Section("Start in this pane") {
+                            ForEach(store.agentKinds, id: \.self) { kind in
+                                Button(AgentKind.displayName(kind)) {
+                                    Task { await store.startAgent(kind, in: current.paneId, nameHint: ws.label, prompt: nil) }
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "sparkles")
+                    }
+                    .accessibilityLabel("Start an agent")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button { fontSize = min(20, fontSize + 1) } label: { Label("Larger text", systemImage: "textformat.size.larger") }

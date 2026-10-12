@@ -142,7 +142,7 @@ import Testing
         let e = try #require(Self.endpoint)
         let client = GatewayClient(url: e.url, token: e.token)
         _ = try await client.connect()
-        let id = try await client.createWorkspace(label: "ios-test", cwd: "/tmp")
+        let (id, _) = try await client.createWorkspace(label: "ios-test", cwd: "/tmp")
         var ws = try #require(try await client.snapshot().workspace(id))
         #expect(ws.label == "ios-test")
         #expect(!ws.focused)

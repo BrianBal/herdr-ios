@@ -136,13 +136,19 @@ public actor GatewayClient {
         return (r.read.text, r.read.truncated ?? false)
     }
 
-    /// Creates a workspace (without stealing focus on the Mac) and returns its id.
-    public func createWorkspace(label: String?, cwd: String?) async throws -> String {
+    /// Creates a workspace (without stealing focus on the Mac); returns it and its first pane.
+    public func createWorkspace(label: String?, cwd: String?) async throws -> (workspaceId: String, paneId: String) {
         var params: [String: JSONValue] = ["focus": false]
         if let label { params["label"] = .string(label) }
         if let cwd { params["cwd"] = .string(cwd) }
         let r: WorkspaceCreatedResult = try await call("workspace.create", params: .object(params))
-        return r.workspace.workspaceId
+        return (r.workspace.workspaceId, r.rootPane.paneId)
+    }
+
+    /// Agent kinds installed on the Mac that herdr can start.
+    public func agentKinds() async throws -> [String] {
+        let r: AgentKindsResult = try await call("gw.agent_kinds")
+        return r.kinds
     }
 
     private func callRaw(_ method: String, params: JSONValue, timeout: TimeInterval) async throws -> Data {
@@ -344,7 +350,13 @@ private struct WatchStarted: Decodable, Sendable {
 
 private struct WorkspaceCreatedResult: Decodable, Sendable {
     struct Created: Decodable, Sendable { let workspaceId: String }
+    struct RootPane: Decodable, Sendable { let paneId: String }
     let workspace: Created
+    let rootPane: RootPane
+}
+
+private struct AgentKindsResult: Decodable, Sendable {
+    let kinds: [String]
 }
 
 private struct PaneReadResult: Decodable, Sendable {
