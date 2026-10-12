@@ -27,3 +27,5 @@ Most valuable first.
 
 - [x] **Keep the Mac awake while agents work**: the gateway holds `caffeinate -is` while any agent is working or blocked, released 2 minutes after they're all quiet (`keep_awake` in config.toml). A lid closed on battery still sleeps.
 - [ ] **TestFlight build**: no dependence on Xcode development signing or the cable; production APNs environment.
+  - [x] Ready to ship: privacy manifests (app + widget), opaque app icon, shared build number, Release archive verified, `scripts/testflight.sh` (archive + upload) and `App/ExportOptions.plist`.
+  - [ ] **You:** create the app record in App Store Connect (bundle ID `dev.bal.herdr.app`), then run `scripts/testflight.sh`. The first run creates the distribution certificate and profiles.
