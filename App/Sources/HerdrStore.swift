@@ -212,6 +212,38 @@ final class HerdrStore {
         }
     }
 
+    /// A message with photos: each is saved on the gateway's machine and its
+    /// path added to the prompt, since agents open images by path.
+    @discardableResult
+    func submit(_ text: String, photos: [Data], to pane: Pane) async -> Bool {
+        guard !photos.isEmpty else { return await submit(text, to: pane) }
+        guard let client else {
+            actionError = "Not connected to herdr."
+            return false
+        }
+        var paths: [String] = []
+        do {
+            for photo in photos {
+                let r: Uploaded = try await client.call(
+                    "gw.upload", params: ["data": .string(photo.base64EncodedString()), "ext": "jpg"], timeout: 60)
+                paths.append(r.path)
+            }
+        } catch {
+            actionError = "Couldn't send the photo: \(error.localizedDescription)"
+            return false
+        }
+        return await submit(Self.prompt(text, attaching: paths), to: pane)
+    }
+
+    static func prompt(_ text: String, attaching paths: [String]) -> String {
+        let lines = paths.map { "Attached image: \($0)" }.joined(separator: "\n")
+        return text.isEmpty ? lines : "\(text)\n\n\(lines)"
+    }
+
+    private struct Uploaded: Decodable, Sendable {
+        let path: String
+    }
+
     /// Fire-and-forget key presses from the toolbar, delivered strictly in tap
     /// order (each waits for the previous one; the gateway keeps per-pane order too).
     func press(_ keys: [String], paneId: String) {

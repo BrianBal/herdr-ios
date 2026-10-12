@@ -2,11 +2,13 @@
 // from herdr's startup hook; `gateway-ctl run` runs it in the foreground.
 
 import { readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { loadConfig, resolvePaths } from "./config";
 import { createGateway } from "./gateway";
 import { HerdrSocket } from "./herdr";
 import { DeviceStore, Notifier, apnsFromConfig } from "./push";
 import { KeepAwake } from "./awake";
+import { Uploads } from "./uploads";
 
 const HERDR_GONE_EXIT_MS = 10 * 60 * 1000;
 const WATCHDOG_MS = 15 * 1000;
@@ -28,7 +30,8 @@ const notifier = new Notifier({
   activeTokens: () => gateway.activeTokens(),
   log,
 });
-const gateway = createGateway({ config, herdr, log, push: { devices, notifier, problem: apns.problem } });
+const uploads = new Uploads(join(paths.stateDir, "uploads"));
+const gateway = createGateway({ config, herdr, log, uploads, push: { devices, notifier, problem: apns.problem } });
 if (apns.problem) log(`push notifications off: ${apns.problem}`);
 notifier.start();
 

@@ -17,6 +17,7 @@ import type { GatewayConfig } from "./config";
 import { HerdrSocket, HerdrUnavailable, type HerdrResponse } from "./herdr";
 import type { ApnsEnvironment, DeviceStore, Notifier } from "./push";
 import { claudeTranscript } from "./transcript";
+import { UploadError, type Uploads } from "./uploads";
 
 export const GATEWAY_VERSION = "0.1.0";
 const MAX_INFLIGHT = 64;
@@ -60,6 +61,8 @@ export interface GatewayOptions {
   config: GatewayConfig;
   herdr: HerdrSocket;
   push?: PushHooks;
+  /** Where gw.upload saves photos; without it, uploads are refused. */
+  uploads?: Uploads;
   log?: (msg: string) => void;
 }
 
@@ -105,7 +108,7 @@ function inputTarget(method: string, params: any): string | null {
   return null;
 }
 
-export function createGateway({ config, herdr, push, log = () => {} }: GatewayOptions) {
+export function createGateway({ config, herdr, push, uploads, log = () => {} }: GatewayOptions) {
   const clients = new Set<WS>();
   const deny = new Set(config.deny_methods);
   const allowedUsers = new Set(config.allowed_users);
@@ -337,6 +340,17 @@ export function createGateway({ config, herdr, push, log = () => {} }: GatewayOp
         }
         return;
       }
+      case "gw.upload": {
+        // A photo for an agent: saved on this machine, its path returned for the prompt.
+        if (!uploads) return send(ws, errorMsg(id, "unavailable", "uploads are not enabled in this gateway"));
+        try {
+          const path = uploads.save(String(params?.data ?? ""), String(params?.ext ?? "jpg"));
+          send(ws, { id, result: { type: "uploaded", path } });
+        } catch (e: any) {
+          send(ws, errorMsg(id, e instanceof UploadError ? "invalid_request" : "gateway_error", e.message));
+        }
+        return;
+      }
       case "gw.agent_kinds": {
         send(ws, { id, result: { type: "agent_kinds", kinds: installedAgentKinds() } });
         return;
@@ -481,6 +495,8 @@ export function createGateway({ config, herdr, push, log = () => {} }: GatewayOp
     },
     websocket: {
       idleTimeout: 120,
+      // Room for a photo upload (base64) in one message.
+      maxPayloadLength: 20 * 1024 * 1024,
       sendPings: true,
       open: (ws: WS) => {
         clients.add(ws);

@@ -3,12 +3,14 @@ import SwiftUI
 
 /// Bottom input area: the terminal toolbar and a prompt field.
 /// Agent panes get `agent.prompt`; shell panes get the text plus Enter.
+/// Agents can also be sent photos (see HerdrStore.submit(_:photos:to:)).
 struct ComposerBar: View {
     @Environment(HerdrStore.self) private var store
     @Environment(AppModel.self) private var app
     let pane: Pane
     @State private var text = ""
     @State private var sending = false
+    @State private var attachments: [PhotoAttachment] = []
     @FocusState private var focused: Bool
 
     private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -25,7 +27,8 @@ struct ComposerBar: View {
             HStack(spacing: 8) {
                 TerminalToolbar(paneId: pane.paneId,
                                 mode: pane.agentStatus == .blocked ? .blockedAgent : pane.hasAgent ? .agent : .shell)
-                SendButton(enabled: !trimmed.isEmpty && !sending && store.isConnected, action: send)
+                SendButton(enabled: (!trimmed.isEmpty || !attachments.isEmpty) && !sending && store.isConnected,
+                           sending: sending && !attachments.isEmpty, action: send)
             }
             if pane.agentStatus != .blocked {
                 QuickPromptBar(kind: pane.hasAgent ? .agent : .shell, draft: trimmed,
@@ -36,21 +39,34 @@ struct ComposerBar: View {
                     focused = true
                 }
             }
-            // Return inserts a new line (vertical TextField); sending is the ↑ button or ⌘Return.
-            TextField(placeholder, text: $text, axis: .vertical)
-                .lineLimit(1...8)
-                .focused($focused)
-                .submitLabel(.return)
-                // Prose for agents; commands for shells, where "Echo" or an autocorrected flag breaks things.
-                .textInputAutocapitalization(pane.hasAgent ? .sentences : .never)
-                .autocorrectionDisabled(!pane.hasAgent)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            if !attachments.isEmpty {
+                AttachmentStrip(attachments: $attachments)
+            }
+            HStack(alignment: .bottom, spacing: 6) {
+                if pane.hasAgent {
+                    AttachPhotoButton(attachments: $attachments)
+                        .disabled(sending)
+                }
+                field
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+
+    private var field: some View {
+        // Return inserts a new line (vertical TextField); sending is the ↑ button or ⌘Return.
+        TextField(placeholder, text: $text, axis: .vertical)
+            .lineLimit(1...8)
+            .focused($focused)
+            .submitLabel(.return)
+            // Prose for agents; commands for shells, where "Echo" or an autocorrected flag breaks things.
+            .textInputAutocapitalization(pane.hasAgent ? .sentences : .never)
+            .autocorrectionDisabled(!pane.hasAgent)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private var placeholder: String {
@@ -60,11 +76,15 @@ struct ComposerBar: View {
 
     private func send() {
         let message = trimmed
-        guard !message.isEmpty else { return }
+        let photos = attachments.map(\.jpeg)
+        guard !message.isEmpty || !photos.isEmpty else { return }
         sending = true
         Task {
             defer { sending = false }
-            if await store.submit(message, to: pane) { text = "" }
+            if await store.submit(message, photos: photos, to: pane) {
+                text = ""
+                attachments = []
+            }
         }
     }
 
@@ -80,6 +100,8 @@ struct ComposerBar: View {
 
 private struct SendButton: View {
     let enabled: Bool
+    /// Uploading photos takes a moment; show progress instead of the arrow.
+    var sending = false
     let action: () -> Void
     @State private var sent = 0
 
@@ -88,11 +110,17 @@ private struct SendButton: View {
             sent += 1
             action()
         } label: {
-            Image(systemName: "arrow.up")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(enabled ? AnyShapeStyle(.black) : AnyShapeStyle(.tertiary))
-                .frame(width: 34, height: 34)
-                .background(enabled ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary), in: Circle())
+            Group {
+                if sending {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(enabled ? AnyShapeStyle(.black) : AnyShapeStyle(.tertiary))
+                }
+            }
+            .frame(width: 34, height: 34)
+            .background(enabled ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary), in: Circle())
         }
         .disabled(!enabled)
         .keyboardShortcut(.return, modifiers: .command)

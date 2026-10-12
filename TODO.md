@@ -26,6 +26,8 @@ Most valuable first.
 - [x] **More than one gateway**: Settings → Gateways lists them (add, rename, change URL/token, remove); the home title switches between them. One is connected at a time; all of them notify, and a notification opens on the gateway that sent it (`gateway_id` in the push).
   - [ ] Install the gateway on the Linux agent box and pair it.
 
+- [x] **Photos for agents**: the photo button in an agent's composer attaches up to 4 photos (library or camera). The gateway saves each on its machine (`gw.upload`, private, deleted after a day) and the prompt carries the paths; Claude Code attaches them as images.
+
 ## Reliability
 
 - [x] **Keep the Mac awake while agents work**: the gateway holds `caffeinate -is` while any agent is working or blocked, released 2 minutes after they're all quiet (`keep_awake` in config.toml). A lid closed on battery still sleeps.

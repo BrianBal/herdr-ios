@@ -52,7 +52,7 @@ targets:
           - CFBundleURLName: dev.bal.herdr.pair
             CFBundleURLSchemes: [herdr-ios]
         NSSupportsLiveActivities: true
-        NSCameraUsageDescription: Scan the pairing QR code that herdr shows on your Mac.
+        NSCameraUsageDescription: Scan the pairing QR code that herdr shows on your Mac, and take photos to send to your agents.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         ITSAppUsesNonExemptEncryption: false

@@ -1,10 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_DENY_METHODS, type GatewayConfig } from "../src/config";
 import { createGateway, installedAgentKinds } from "../src/gateway";
 import { KeepAwake } from "../src/awake";
+import { Uploads } from "../src/uploads";
 import { HerdrSocket } from "../src/herdr";
 import { DeviceStore, Notifier, apnsJwt, apnsPayload, boardFrom, describe as describePush, type ApnsRequest } from "../src/push";
 import { generateKeyPairSync, verify } from "node:crypto";
@@ -100,7 +101,8 @@ const notifier = new Notifier({
   timing: { boardDebounceMs: 10, widgetMinIntervalMs: 0, activityQuietMs: 0, activityStartRetryMs: 0 },
   activeTokens: () => gw.activeTokens(),
 });
-const gw = createGateway({ config, herdr, push: { devices, notifier } });
+const uploads = new Uploads(join(dir, "uploads"));
+const gw = createGateway({ config, herdr, uploads, push: { devices, notifier } });
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: gw.fetch, websocket: gw.websocket });
 const wsUrl = `ws://127.0.0.1:${server.port}/ws`;
 
@@ -470,6 +472,35 @@ describe("agents", () => {
     expect(r.result.type).toBe("agent_kinds");
     expect(Array.isArray(r.result.kinds)).toBe(true);
     c.close();
+  });
+});
+
+describe("uploads", () => {
+  test("gw.upload saves the photo privately and returns its path", async () => {
+    const c = new Client();
+    await c.open();
+    const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+    c.send({ id: 1, method: "gw.upload", params: { data: png.toString("base64"), ext: "png" } });
+    const r = await c.next((m) => m.id === 1);
+    expect(r.result.type).toBe("uploaded");
+    expect(r.result.path.startsWith(join(dir, "uploads") + "/")).toBe(true);
+    expect(r.result.path.endsWith(".png")).toBe(true);
+    expect(readFileSync(r.result.path).equals(png)).toBe(true);
+    expect(statSync(r.result.path).mode & 0o777).toBe(0o600);
+
+    c.send({ id: 2, method: "gw.upload", params: { data: "aGk=", ext: "exe" } });
+    expect((await c.next((m) => m.id === 2)).error.code).toBe("invalid_request");
+    c.close();
+  });
+
+  test("uploads older than a day are deleted on the next upload", () => {
+    const u = new Uploads(join(dir, "uploads-prune"));
+    const old = u.save("aGk=", "jpg");
+    const day = Date.now() / 1000 - 25 * 3600;
+    utimesSync(old, day, day);
+    const fresh = u.save("aGk=", "jpg");
+    expect(existsSync(old)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
   });
 });
 

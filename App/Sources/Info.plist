@@ -39,7 +39,7 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Scan the pairing QR code that herdr shows on your Mac.</string>
+	<string>Scan the pairing QR code that herdr shows on your Mac, and take photos to send to your agents.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
