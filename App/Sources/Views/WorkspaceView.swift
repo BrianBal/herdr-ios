@@ -629,7 +629,7 @@ private struct SegmentView: View {
     let wrap: Bool
 
     var body: some View {
-        Text(segment.text)
+        content
             .textSelection(.enabled)
             .fixedSize(horizontal: !wrap, vertical: false)
             .frame(maxWidth: wrap ? .infinity : nil, alignment: .leading)
@@ -654,6 +654,23 @@ private struct SegmentView: View {
                         .padding(.vertical, segment.kind == .code ? 5 : 0)
                 }
             }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if wrap, let paragraphs = segment.paragraphs {
+            // Each line with its marker beside it, so wrapped text hangs under the marker.
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(paragraphs) { p in
+                    HStack(alignment: .firstTextBaseline, spacing: 0) {
+                        if let hang = p.hang { Text(hang).fixedSize() }
+                        Text(p.body).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        } else {
+            Text(segment.text)
+        }
     }
 
     /// Code: beside the top of the block. Messages: beside their last line.

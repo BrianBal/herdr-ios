@@ -465,3 +465,28 @@ extension ScrollbackTests {
         ])
     }
 }
+
+@Suite struct HangingTests {
+    static func line(_ s: String) -> StyledLine { StyledLine(runs: [StyledRun(text: s, style: TermStyle())]) }
+
+    @Test func markersAndIndents() {
+        #expect(Self.line("  - item text").hangingIndent == 4)
+        #expect(Self.line("⏺ message").hangingIndent == 2)
+        #expect(Self.line("  12. twelfth").hangingIndent == 6)
+        #expect(Self.line("    continuation").hangingIndent == 4)
+        #expect(Self.line("no indent").hangingIndent == 0)
+        #expect(Self.line("   ").hangingIndent == 0)
+        #expect(Self.line("  2026 was a year").hangingIndent == 2)
+    }
+
+    @Test func splitKeepsStyles() {
+        var bold = TermStyle()
+        bold.bold = true
+        let l = StyledLine(runs: [StyledRun(text: "  - ", style: TermStyle()), StyledRun(text: "Done: all", style: bold)])
+        let (head, tail) = l.split(at: 6)
+        #expect(head.plainText == "  - Do")
+        #expect(tail.plainText == "ne: all")
+        #expect(tail.runs.first?.style.bold == true)
+        #expect(head.runs.last?.style.bold == true)
+    }
+}

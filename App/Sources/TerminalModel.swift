@@ -70,6 +70,16 @@ struct RenderedSegment: Identifiable, Sendable {
     let kind: TerminalSegment.Kind
     let text: AttributedString
     let copyText: String?
+    /// Agent prose laid out a line at a time so wrapped lines can hang under
+    /// their list marker (SwiftUI's Text can't indent wrapped lines itself).
+    var paragraphs: [RenderedParagraph]? = nil
+}
+
+struct RenderedParagraph: Identifiable, Sendable {
+    let id: Int
+    /// Indent and marker ("  - ", "⏺ "), drawn beside the body.
+    let hang: AttributedString?
+    let body: AttributedString
 }
 
 /// Live view of one pane: a gateway watch whose ANSI frames are parsed,
@@ -197,10 +207,22 @@ final class TerminalModel {
                 if reflow, seg.kind == .message, columns != nil, let pane {
                     shown = TerminalSegmenter.reflowed(shown, columns: pane)
                 }
-                return RenderedSegment(id: seg.id, kind: seg.kind,
-                                       text: TerminalRenderer.render(shown.fittingRules(to: columns), fontSize: size,
-                                                                     paneColumns: pane),
-                                       copyText: seg.copyText)
+                let fitted = shown.fittingRules(to: columns)
+                var rendered = RenderedSegment(id: seg.id, kind: seg.kind,
+                                               text: TerminalRenderer.render(fitted, fontSize: size, paneColumns: pane),
+                                               copyText: seg.copyText)
+                if seg.kind == .message, columns != nil {
+                    rendered.paragraphs = fitted.enumerated().map { i, line in
+                        let n = line.isHorizontalRule ? 0 : line.hangingIndent
+                        let (head, body) = n > 0 ? line.split(at: n) : (StyledLine(runs: []), line)
+                        // A blank line still needs its height.
+                        let bodyLine = body.plainText.isEmpty ? StyledLine(runs: [StyledRun(text: " ", style: TermStyle())]) : body
+                        return RenderedParagraph(id: i,
+                                                 hang: n > 0 ? TerminalRenderer.render([head], fontSize: size) : nil,
+                                                 body: TerminalRenderer.render([bodyLine], fontSize: size))
+                    }
+                }
+                return rendered
             }
         }.value
     }

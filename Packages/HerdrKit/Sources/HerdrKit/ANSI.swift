@@ -26,10 +26,19 @@ public struct TermStyle: Sendable, Hashable {
 public struct StyledRun: Sendable, Hashable {
     public var text: String
     public var style: TermStyle
+
+    public init(text: String, style: TermStyle) {
+        self.text = text
+        self.style = style
+    }
 }
 
 public struct StyledLine: Sendable, Hashable {
     public var runs: [StyledRun]
+
+    public init(runs: [StyledRun]) {
+        self.runs = runs
+    }
 
     public var plainText: String { runs.map(\.text).joined() }
 
