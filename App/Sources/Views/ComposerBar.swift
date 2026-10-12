@@ -28,7 +28,7 @@ struct ComposerBar: View {
                 TerminalToolbar(paneId: pane.paneId,
                                 mode: pane.agentStatus == .blocked ? .blockedAgent : pane.hasAgent ? .agent : .shell)
                 SendButton(enabled: (!trimmed.isEmpty || !attachments.isEmpty) && !sending && store.isConnected,
-                           sending: sending && !attachments.isEmpty, action: send)
+                           sending: sending, action: send)
             }
             if pane.agentStatus != .blocked {
                 QuickPromptBar(kind: pane.hasAgent ? .agent : .shell, draft: trimmed,
@@ -74,16 +74,34 @@ struct ComposerBar: View {
         return "Run a command…"
     }
 
+    /// Empties the field right away (a slow send shouldn't look like it didn't
+    /// go) and puts the message back if it fails.
     private func send() {
         let message = trimmed
-        let photos = attachments.map(\.jpeg)
-        guard !message.isEmpty || !photos.isEmpty else { return }
+        let sentAttachments = attachments
+        guard !message.isEmpty || !sentAttachments.isEmpty else { return }
         sending = true
+        clear(sent: message)
+        attachments = []
         Task {
             defer { sending = false }
-            if await store.submit(message, photos: photos, to: pane) {
-                text = ""
-                attachments = []
+            if await !store.submit(message, photos: sentAttachments.map(\.jpeg), to: pane) {
+                if trimmed.isEmpty { text = message }
+                if attachments.isEmpty { attachments = sentAttachments }
+            }
+        }
+    }
+
+    /// The keyboard can write a word it was still composing (autocorrect,
+    /// inline prediction, dictation) back into the field just after it's
+    /// emptied. Watch briefly and drop anything that's the tail of what was sent.
+    private func clear(sent: String) {
+        text = ""
+        Task {
+            for _ in 0..<6 {
+                try? await Task.sleep(for: .milliseconds(50))
+                let back = trimmed
+                if !back.isEmpty, sent.contains(back) { text = "" }
             }
         }
     }
@@ -100,7 +118,7 @@ struct ComposerBar: View {
 
 private struct SendButton: View {
     let enabled: Bool
-    /// Uploading photos takes a moment; show progress instead of the arrow.
+    /// While a send is in flight (photos take a moment): progress instead of the arrow.
     var sending = false
     let action: () -> Void
     @State private var sent = 0
