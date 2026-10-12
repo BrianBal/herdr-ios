@@ -4,7 +4,7 @@ Most valuable first.
 
 ## Quick but important
 
-- [ ] **Git repo**: put the project in git and push it to GitHub (`BrianBal/herdr-ios`).
+- [x] **Git repo**: in git and on GitHub at [BrianBal/herdr-ios](https://github.com/BrianBal/herdr-ios).
 - [ ] **Test the untried push paths on the phone**:
   - [ ] Notification buttons: **Choose 1/2/3** on a blocked agent, **Reply** on a finished one.
   - [ ] Live Activity started by the gateway (push-to-start) while the app is closed.
