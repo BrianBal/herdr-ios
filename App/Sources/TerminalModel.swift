@@ -211,7 +211,8 @@ final class TerminalModel {
                 var rendered = RenderedSegment(id: seg.id, kind: seg.kind,
                                                text: TerminalRenderer.render(fitted, fontSize: size, paneColumns: pane),
                                                copyText: seg.copyText)
-                if seg.kind == .message, columns != nil {
+                // A view per line; very long segments (big transcripts) stay one Text to keep scrolling smooth.
+                if seg.kind == .message, columns != nil, fitted.count <= 300 {
                     rendered.paragraphs = fitted.enumerated().map { i, line in
                         let n = line.isHorizontalRule ? 0 : line.hangingIndent
                         let (head, body) = n > 0 ? line.split(at: n) : (StyledLine(runs: []), line)
