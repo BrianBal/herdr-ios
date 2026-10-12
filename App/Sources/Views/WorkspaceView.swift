@@ -480,7 +480,7 @@ struct PaneTerminalView: View {
     /// lines just above the bottom, ready to scroll up through.
     private func loadEarlier(_ proxy: ScrollViewProxy) async {
         guard let client = store.client else { return }
-        await model.loadEarlier(paneId, agent: agentPane, client: client)
+        await model.loadEarlier(paneId, agent: store.snapshot?.pane(paneId)?.agent, client: client)
         guard !model.history.isEmpty else { return }
         // Let the new rows lay out first, or the jump lands on stale positions.
         try? await Task.sleep(for: .milliseconds(80))

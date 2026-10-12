@@ -87,6 +87,8 @@ final class TerminalModel {
     private(set) var history: [RenderedSegment] = []
     private(set) var historyState: HistoryState = .none
     private var historyLines: [StyledLine] = []
+    /// History lines are whole paragraphs (Claude's transcript), not screen rows.
+    private var historyLogical = false
     /// Lines asked for last time; each "load more" doubles it.
     private var historyRequest = 0
 
@@ -134,13 +136,15 @@ final class TerminalModel {
     }
 
     /// Loads output from before the current screen (or more of it).
-    func loadEarlier(_ paneId: String, agent: Bool, client: GatewayClient) async {
+    /// `agent` is the pane's agent kind, if any ("claude" reads Claude's transcript).
+    func loadEarlier(_ paneId: String, agent: String?, client: GatewayClient) async {
         guard historyState != .loading else { return }
         let request = historyRequest == 0 ? Self.historyFirstRequest : min(historyRequest * 2, Self.historyMaxRequest)
         let previousCount = historyLines.count
         historyState = .loading
         do {
-            let (text, truncated) = try await client.history(paneId: paneId, agent: agent, lines: request)
+            let (text, truncated, logical) = try await client.history(paneId: paneId, agent: agent, lines: request)
+            historyLogical = logical
             let visible = lines
             let earlier = await Task.detached(priority: .userInitiated) {
                 Scrollback.earlier(ANSIParser.parse(text), visible: visible)
@@ -179,16 +183,20 @@ final class TerminalModel {
     /// History doesn't change with live frames, only when loaded or re-laid out.
     private func rerenderHistory() async {
         history = historyLines.isEmpty ? [] : await Self.render(historyLines, size: fontSize, columns: wrapColumns,
-                                                                 pane: paneColumns, agent: agentPane)
+                                                                 pane: paneColumns, agent: agentPane,
+                                                                 reflow: !historyLogical)
     }
 
-    private static func render(_ lines: [StyledLine], size: CGFloat, columns: Int?, pane: Int?, agent: Bool) async -> [RenderedSegment] {
+    private static func render(_ lines: [StyledLine], size: CGFloat, columns: Int?, pane: Int?, agent: Bool,
+                               reflow: Bool = true) async -> [RenderedSegment] {
         await Task.detached(priority: .userInitiated) {
             TerminalSegmenter.segment(lines, columns: pane, agentPane: agent).map { seg in
                 // When wrapping to the phone, undo the agent's wrapping at the Mac's width
                 // first, so prose wraps once (here) instead of twice.
                 var shown = seg.lines
-                if seg.kind == .message, columns != nil, let pane { shown = TerminalSegmenter.reflowed(shown, columns: pane) }
+                if reflow, seg.kind == .message, columns != nil, let pane {
+                    shown = TerminalSegmenter.reflowed(shown, columns: pane)
+                }
                 return RenderedSegment(id: seg.id, kind: seg.kind,
                                        text: TerminalRenderer.render(shown.fittingRules(to: columns), fontSize: size,
                                                                      paneColumns: pane),

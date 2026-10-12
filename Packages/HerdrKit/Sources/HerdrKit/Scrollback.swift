@@ -44,9 +44,18 @@ public enum Scrollback {
         String(text.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(looseKeyLength))
     }
 
-    /// The latest history line that starts like the screen's first line of some length.
+    /// Where the screen starts in a transcript that wraps differently: the
+    /// latest history line containing one of the screen's first substantial
+    /// lines (trying a few, since some screen lines, like tool output, may not
+    /// be in the transcript at all). A screen line that starts mid-paragraph
+    /// keeps that paragraph in the history, so its beginning isn't lost.
     private static func looseCut(_ recentKeys: [String], visible: [String]) -> Int? {
-        guard let anchor = visible.first(where: { $0.count >= 12 }).map(looseKey) else { return nil }
-        return recentKeys.lastIndex { looseKey($0) == anchor }
+        let normalized = recentKeys.map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        for line in visible.filter({ $0.count >= 12 }).prefix(12) {
+            let anchor = looseKey(line)
+            guard let i = normalized.lastIndex(where: { $0.contains(anchor) }) else { continue }
+            return normalized[i].hasPrefix(anchor) ? i : i + 1
+        }
+        return nil
     }
 }

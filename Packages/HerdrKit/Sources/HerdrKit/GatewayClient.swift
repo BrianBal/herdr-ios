@@ -120,10 +120,22 @@ public actor GatewayClient {
     /// Recent output of a pane, oldest first, ending with its current screen.
     /// Shells give their scrollback with colors. Agents draw their own
     /// screen, so their history comes from herdr's agent reader, which only
-    /// returns plain text; `truncated` means there's more than `lines`.
-    public func history(paneId: String, agent: Bool, lines: Int) async throws -> (text: String, truncated: Bool) {
+    /// returns plain text, or for Claude Code (which herdr can't read back)
+    /// from Claude's session file via the gateway. `truncated` means there's
+    /// more than `lines`; `logical` means lines are whole paragraphs rather
+    /// than screen rows (no re-wrapping needed).
+    public func history(paneId: String, agent: String?, lines: Int) async throws
+        -> (text: String, truncated: Bool, logical: Bool)
+    {
+        if agent == "claude" {
+            if let t: TranscriptResult = try? await call("gw.claude_transcript", params: [
+                "pane_id": .string(paneId), "lines": .number(Double(lines)),
+            ], timeout: 30) {
+                return (t.text, t.truncated, true)
+            }
+        }
         let r: PaneReadResult
-        if agent {
+        if agent != nil {
             r = try await call("agent.read", params: [
                 "target": .string(paneId), "source": "recent", "lines": .number(Double(lines)), "format": "text",
             ], timeout: 30)
@@ -133,7 +145,7 @@ public actor GatewayClient {
                 "format": "ansi", "strip_ansi": false,
             ], timeout: 30)
         }
-        return (r.read.text, r.read.truncated ?? false)
+        return (r.read.text, r.read.truncated ?? false, false)
     }
 
     /// Creates a workspace (without stealing focus on the Mac); returns it and its first pane.
@@ -357,6 +369,11 @@ private struct WorkspaceCreatedResult: Decodable, Sendable {
 
 private struct AgentKindsResult: Decodable, Sendable {
     let kinds: [String]
+}
+
+private struct TranscriptResult: Decodable, Sendable {
+    let text: String
+    let truncated: Bool
 }
 
 private struct PaneReadResult: Decodable, Sendable {

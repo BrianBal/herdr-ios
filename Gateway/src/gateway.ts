@@ -16,6 +16,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { GatewayConfig } from "./config";
 import { HerdrSocket, HerdrUnavailable, type HerdrResponse } from "./herdr";
 import type { ApnsEnvironment, DeviceStore, Notifier } from "./push";
+import { claudeTranscript } from "./transcript";
 
 export const GATEWAY_VERSION = "0.1.0";
 const MAX_INFLIGHT = 64;
@@ -317,6 +318,23 @@ export function createGateway({ config, herdr, push, log = () => {} }: GatewayOp
         st.subscriptions.delete(sub);
         h.close();
         send(ws, { id, result: { type: "ok" } });
+        return;
+      }
+      case "gw.claude_transcript": {
+        // A Claude pane's earlier conversation, from Claude's own session file.
+        const paneId = String(params?.pane_id ?? "");
+        const lines = Math.min(20000, Math.max(1, Number(params?.lines) || 1000));
+        try {
+          const info = await herdr.call("pane.get", { pane_id: paneId }, 3000);
+          const pane = info.result?.pane;
+          if (!pane) return send(ws, errorMsg(id, "not_found", "no such pane"));
+          if (pane.agent !== "claude") return send(ws, errorMsg(id, "not_claude", "this pane isn't running Claude Code"));
+          const t = claudeTranscript(pane.foreground_cwd ?? pane.cwd, pane.terminal_title_stripped, lines);
+          if (!t) return send(ws, errorMsg(id, "not_found", "no Claude session found for this pane's folder"));
+          send(ws, { id, result: { type: "transcript", text: t.text, truncated: t.truncated } });
+        } catch (e: any) {
+          send(ws, errorMsg(id, "gateway_error", e.message));
+        }
         return;
       }
       case "gw.agent_kinds": {

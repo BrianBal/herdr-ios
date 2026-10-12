@@ -439,3 +439,29 @@ extension ScrollbackTests {
         #expect(Scrollback.earlier(recent, visible: visible).map(\.plainText) == ["• Earlier answer."])
     }
 }
+
+extension ScrollbackTests {
+    @Test func claudeTranscriptWhereTheScreenStartsMidParagraph() {
+        // Transcript lines are whole paragraphs; the screen shows them wrapped,
+        // and its top line is the middle of one.
+        let recent = Self.lines([
+            "❯ earlier question",
+            "",
+            "⏺ The first answer is a long paragraph that the screen wraps over several rows of text.",
+            "",
+            "⏺ Bash(ls)",
+        ])
+        let visible = Self.lines([
+            "  the screen wraps over several rows of text.",
+            "",
+            "⏺ Bash(ls)",
+            "  ⎿  a b c",
+        ])
+        // The partly visible paragraph stays in the history, whole.
+        #expect(Scrollback.earlier(recent, visible: visible).map(\.plainText) == [
+            "❯ earlier question",
+            "",
+            "⏺ The first answer is a long paragraph that the screen wraps over several rows of text.",
+        ])
+    }
+}

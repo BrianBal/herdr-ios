@@ -91,6 +91,15 @@ Notification payloads carry `pane_id`, `workspace_id` and `status`; categories
 are `AGENT_BLOCKED` (buttons send keys 1/2/3, or a text reply) and `AGENT_DONE`
 (text reply via `agent.prompt`).
 
+## Claude transcripts
+
+herdr can't read back a Claude Code pane's history (Claude redraws its own
+screen), so `gw.claude_transcript {pane_id, lines}` finds the pane's session
+under `~/.claude/projects/<cwd>/` (the file whose `ai-title` matches the
+pane's title, else the newest) and renders it like Claude's screen: prompts,
+replies with Markdown as terminal styling, one-line tool calls. Thinking,
+tool output and subagent traffic are left out. Only the last 8 MB is read.
+
 ## Keeping the Mac awake
 
 While any agent is working or blocked, the gateway holds `caffeinate -is`

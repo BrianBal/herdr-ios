@@ -15,7 +15,7 @@ Most valuable first.
 - [x] **Reflow agent prose**: agents hard-wrap replies at the Mac's pane width, and the phone wraps them again, so long answers look ragged. Rejoin wrapped paragraphs for display, the way the message copy button already does (`TerminalSegmenter.messageText`). Done: `TerminalSegmenter.reflowed`.
   - [ ] Follow-up: hanging indents, so a wrapped list item lines up under its text instead of column 0.
 - [x] **Scrollback**: "Load earlier output" (or pull down at the top) loads history above a Live divider; "Load more" doubles it, up to 16k lines. Shells get colored scrollback (`pane.read`); agents get their transcript as plain text (`agent.read`).
-  - [ ] Claude Code panes return only the screen (herdr can't recover its history); consider a fallback, e.g. reading Claude's session transcript file.
+  - [x] Claude Code panes: earlier output comes from Claude's session transcript (`gw.claude_transcript`: found by the pane's folder and title, rendered like Claude's screen with Markdown styled).
 
 ## Doing more from the phone
 
