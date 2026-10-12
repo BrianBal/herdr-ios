@@ -12,6 +12,7 @@ final class AppModel {
     let store = HerdrStore()
     let push = PushManager()
     let liveActivity = LiveActivityManager()
+    let quickPrompts = QuickPrompts()
     var pairingError: String?
     /// Pane requested via `herdr-ios://open?pane=<id>`; RootView navigates and clears it.
     var pendingPaneId: String?

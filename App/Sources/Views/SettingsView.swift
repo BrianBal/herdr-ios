@@ -28,6 +28,11 @@ struct SettingsView: View {
                 }
                 notificationsSection
                 liveActivitySection
+                Section {
+                    NavigationLink("Quick prompts") { QuickPromptsEditor() }
+                } footer: {
+                    Text("One-tap chips above the message field. Long-press a chip to edit or remove it.")
+                }
                 Section("Terminal") {
                     Stepper(value: $fontSize, in: 7...20, step: 1) {
                         LabeledContent("Font size", value: "\(Int(fontSize)) pt")
