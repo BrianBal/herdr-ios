@@ -32,13 +32,20 @@ function alive(pid: number | null): boolean {
   }
 }
 
-async function health(config: GatewayConfig): Promise<any | null> {
+async function probe(config: GatewayConfig): Promise<{ body: any } | null> {
   try {
     const r = await fetch(`http://127.0.0.1:${config.port}/healthz`, { signal: AbortSignal.timeout(1000) });
-    return r.ok ? await r.json() : null;
+    return { body: r.ok ? await r.json().catch(() => null) : null };
   } catch {
-    return null;
+    return null; // nothing listening
   }
+}
+
+/** The gateway's health, or null if it isn't the one answering on the port. */
+async function health(config: GatewayConfig): Promise<any | null> {
+  const body = (await probe(config))?.body;
+  // Other servers have a /healthz too; only ours reports gateway_version.
+  return body?.gateway_version ? body : null;
 }
 
 function rotateLog(paths: Paths) {
@@ -52,6 +59,12 @@ async function ensure(paths: Paths, config: GatewayConfig): Promise<number> {
   if (h?.ok) {
     console.log(`gateway already running (pid ${h.pid}) on 127.0.0.1:${config.port}`);
     return 0;
+  }
+  if (await probe(config)) {
+    console.error(
+      `port ${config.port} is in use by another program; set a free port in ${paths.configFile} and run ensure again`,
+    );
+    return 1;
   }
   const stale = readPid(paths);
   if (alive(stale)) {
