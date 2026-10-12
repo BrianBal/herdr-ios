@@ -1,0 +1,117 @@
+name: Herdr
+options:
+  bundleIdPrefix: dev.bal
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+packages:
+  HerdrKit:
+    path: ../Packages/HerdrKit
+targets:
+  Herdr:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - Shared
+      - Resources
+    dependencies:
+      - package: HerdrKit
+      - target: HerdrWidgets
+    entitlements:
+      path: Sources/Herdr.entitlements
+      properties:
+        aps-environment: development
+        com.apple.security.application-groups: [group.dev.bal.herdr]
+        # First entry = where new Keychain items go, so the widget can read the token.
+        keychain-access-groups: [$(AppIdentifierPrefix)dev.bal.herdr.shared]
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: Herdr
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.bal.herdr.pair
+            CFBundleURLSchemes: [herdr-ios]
+        NSSupportsLiveActivities: true
+        NSCameraUsageDescription: Scan the pairing QR code that herdr shows on your Mac.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.bal.herdr.app
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: RB5EV68CB8
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ENABLE_PREVIEWS: YES
+  HerdrWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - Widgets
+      - Shared
+    dependencies:
+      - package: HerdrKit
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Herdr
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: Widgets/HerdrWidgets.entitlements
+      properties:
+        aps-environment: development
+        com.apple.security.application-groups: [group.dev.bal.herdr]
+        keychain-access-groups: [$(AppIdentifierPrefix)dev.bal.herdr.shared]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.bal.herdr.app.widgets
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: RB5EV68CB8
+  HerdrUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests
+    dependencies:
+      - target: Herdr
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.bal.herdr.app.uitests
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: RB5EV68CB8
+schemes:
+  Herdr:
+    build:
+      targets:
+        Herdr: all
+    test:
+      targets:
+        - HerdrUITests

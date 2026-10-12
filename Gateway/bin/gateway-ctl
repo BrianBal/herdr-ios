@@ -1,0 +1,11 @@
+#!/bin/sh
+# Locate bun even when herdr's server was started with a minimal PATH.
+set -e
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+for candidate in "$BUN_BIN" "$(command -v bun 2>/dev/null)" "$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    exec "$candidate" "$DIR/src/ctl.ts" "$@"
+  fi
+done
+echo "gateway-ctl: bun not found (install from https://bun.sh or set BUN_BIN)" >&2
+exit 127

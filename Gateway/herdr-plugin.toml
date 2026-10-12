@@ -1,0 +1,31 @@
+id = "bal.ios-gateway"
+name = "iOS Gateway"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Expose the herdr socket API as an authenticated WebSocket for the iOS app (via tailscale serve)"
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["bun", "install", "--production"]
+
+# One-shot hook: spawns the detached gateway daemon unless one is already healthy.
+[[startup]]
+command = ["sh", "bin/gateway-ctl", "ensure"]
+
+[[actions]]
+id = "restart"
+title = "iOS gateway: restart"
+command = ["sh", "bin/gateway-ctl", "restart"]
+
+[[actions]]
+id = "status"
+title = "iOS gateway: status"
+command = ["sh", "bin/gateway-ctl", "status"]
+
+[[panes]]
+id = "pair"
+title = "Pair iOS device"
+placement = "popup"
+width = 72
+height = 44
+command = ["sh", "bin/gateway-ctl", "pair", "--wait"]
