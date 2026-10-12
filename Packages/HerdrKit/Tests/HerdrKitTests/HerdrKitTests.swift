@@ -395,3 +395,47 @@ import Testing
         #expect(TerminalSegmenter.reflowed(lines, columns: 80).map(\.plainText) == ["⏺ One.", "  Two.", "  Three."])
     }
 }
+
+@Suite struct ScrollbackTests {
+    static func lines(_ s: [String]) -> [StyledLine] { s.map { StyledLine(runs: [StyledRun(text: $0, style: TermStyle())]) } }
+
+    @Test func keepsWhatComesBeforeTheScreen() {
+        let recent = Self.lines(["old 1", "old 2", "", "$ ls", "a b c", "$ pwd", "/tmp", "$ "])
+        let visible = Self.lines(["$ ls", "a b c", "$ pwd", "/tmp", "$ "])
+        #expect(Scrollback.earlier(recent, visible: visible).map(\.plainText) == ["old 1", "old 2"])
+    }
+
+    @Test func screenStartingWithBlankLinesAndRepeatedText() {
+        // "$ ls" appears twice; the match must be the one followed by the rest of the screen.
+        let recent = Self.lines(["$ ls", "x", "", "$ ls", "a b c", "$ "])
+        let visible = Self.lines(["", "$ ls", "a b c", "$ "])
+        #expect(Scrollback.earlier(recent, visible: visible).map(\.plainText) == ["$ ls", "x"])
+    }
+
+    @Test func fallsBackToDroppingAScreen() {
+        let recent = Self.lines(["1", "2", "3", "4"])
+        let visible = Self.lines(["changed", "since"])
+        #expect(Scrollback.earlier(recent, visible: visible).map(\.plainText) == ["1", "2"])
+    }
+}
+
+extension ScrollbackTests {
+    @Test func agentTranscriptWithDifferentLineBreaks() {
+        // The screen shows a long prompt on one line; the transcript breaks it.
+        let recent = Self.lines([
+            "• Earlier answer.",
+            "",
+            "› ok we also have a pretty good CLAUDE.md file read that then",
+            "update them",
+            "Worked for 5m",
+            "› Ask Codex to do anything",
+        ])
+        let visible = Self.lines([
+            "› ok we also have a pretty good CLAUDE.md file read that then update them",
+            "Worked for 5m",
+            "",
+            "› Ask Codex to do anything",
+        ])
+        #expect(Scrollback.earlier(recent, visible: visible).map(\.plainText) == ["• Earlier answer."])
+    }
+}

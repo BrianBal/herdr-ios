@@ -83,6 +83,25 @@ final class TerminalModel {
     }
 
     private(set) var segments: [RenderedSegment] = []
+    /// Earlier output loaded on request, shown above the live screen.
+    private(set) var history: [RenderedSegment] = []
+    private(set) var historyState: HistoryState = .none
+    private var historyLines: [StyledLine] = []
+    /// Lines asked for last time; each "load more" doubles it.
+    private var historyRequest = 0
+
+    enum HistoryState: Equatable {
+        case none
+        case loading
+        /// Loaded; `more` when herdr had more than we asked for.
+        case loaded(more: Bool)
+        /// Asked, but there was nothing before the screen.
+        case empty
+        case failed(String)
+    }
+
+    static let historyFirstRequest = 1000
+    static let historyMaxRequest = 16000
     private(set) var status: Status = .loading
     private(set) var lastFrameAt: Date?
     private var lines: [StyledLine] = []
@@ -114,6 +133,31 @@ final class TerminalModel {
         }
     }
 
+    /// Loads output from before the current screen (or more of it).
+    func loadEarlier(_ paneId: String, agent: Bool, client: GatewayClient) async {
+        guard historyState != .loading else { return }
+        let request = historyRequest == 0 ? Self.historyFirstRequest : min(historyRequest * 2, Self.historyMaxRequest)
+        let previousCount = historyLines.count
+        historyState = .loading
+        do {
+            let (text, truncated) = try await client.history(paneId: paneId, agent: agent, lines: request)
+            let visible = lines
+            let earlier = await Task.detached(priority: .userInitiated) {
+                Scrollback.earlier(ANSIParser.parse(text), visible: visible)
+            }.value
+            historyRequest = request
+            historyLines = earlier
+            await rerenderHistory()
+            if earlier.isEmpty {
+                historyState = .empty
+            } else {
+                historyState = .loaded(more: truncated && request < Self.historyMaxRequest && earlier.count > previousCount)
+            }
+        } catch {
+            historyState = .failed(error.localizedDescription)
+        }
+    }
+
     func setLayout(fontSize size: CGFloat, wrapColumns columns: Int?, paneColumns pane: Int?, agentPane agent: Bool) async {
         guard size != fontSize || columns != wrapColumns || pane != paneColumns || agent != agentPane else { return }
         fontSize = size
@@ -121,15 +165,25 @@ final class TerminalModel {
         paneColumns = pane
         agentPane = agent
         await rerender()
+        await rerenderHistory()
     }
 
     private func rerender() async {
-        let lines = self.lines
         let size = fontSize
         let columns = wrapColumns
         let pane = paneColumns
         let agent = agentPane
-        segments = await Task.detached(priority: .userInitiated) {
+        segments = await Self.render(lines, size: size, columns: columns, pane: pane, agent: agent)
+    }
+
+    /// History doesn't change with live frames, only when loaded or re-laid out.
+    private func rerenderHistory() async {
+        history = historyLines.isEmpty ? [] : await Self.render(historyLines, size: fontSize, columns: wrapColumns,
+                                                                 pane: paneColumns, agent: agentPane)
+    }
+
+    private static func render(_ lines: [StyledLine], size: CGFloat, columns: Int?, pane: Int?, agent: Bool) async -> [RenderedSegment] {
+        await Task.detached(priority: .userInitiated) {
             TerminalSegmenter.segment(lines, columns: pane, agentPane: agent).map { seg in
                 // When wrapping to the phone, undo the agent's wrapping at the Mac's width
                 // first, so prose wraps once (here) instead of twice.

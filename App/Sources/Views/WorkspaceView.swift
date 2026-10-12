@@ -415,8 +415,14 @@ struct PaneTerminalView: View {
             if model.status == .loading && model.isEmpty {
                 ProgressView().tint(TerminalRenderer.foreground)
             } else {
+                ScrollViewReader { proxy in
                 ScrollView(wrap ? .vertical : [.vertical, .horizontal]) {
                     VStack(alignment: .leading, spacing: 0) {
+                        HistoryHeader(state: model.historyState) { Task { await loadEarlier(proxy) } }
+                        ForEach(model.history) { segment in
+                            SegmentView(segment: segment, wrap: wrap)
+                        }
+                        if !model.history.isEmpty { LiveDivider().id(Self.liveAnchor) }
                         ForEach(model.segments) { segment in
                             SegmentView(segment: segment, wrap: wrap)
                         }
@@ -429,6 +435,9 @@ struct PaneTerminalView: View {
                 }
                 .defaultScrollAnchor(.bottom)
                 .scrollIndicators(.visible)
+                // Pull down at the top for earlier output.
+                .refreshable { await loadEarlier(proxy) }
+                }
             }
         }
         .overlay(alignment: .top) {
@@ -460,6 +469,19 @@ struct PaneTerminalView: View {
         }
     }
 
+    static let liveAnchor = "live"
+
+    /// Fetches earlier output, then keeps you at the seam: the newest earlier
+    /// lines just above the bottom, ready to scroll up through.
+    private func loadEarlier(_ proxy: ScrollViewProxy) async {
+        guard let client = store.client else { return }
+        await model.loadEarlier(paneId, agent: agentPane, client: client)
+        guard !model.history.isEmpty else { return }
+        // Let the new rows lay out first, or the jump lands on stale positions.
+        try? await Task.sleep(for: .milliseconds(80))
+        proxy.scrollTo(Self.liveAnchor, anchor: .bottom)
+    }
+
     private struct LayoutKey: Equatable {
         let fontSize: Double
         let columns: Int?
@@ -470,6 +492,68 @@ struct PaneTerminalView: View {
     private struct WatchKey: Hashable {
         let generation: Int
         let paneId: String
+    }
+}
+
+/// Top of a pane's output: load (more) earlier output, or say why there's none.
+private struct HistoryHeader: View {
+    let state: TerminalModel.HistoryState
+    let load: () -> Void
+
+    var body: some View {
+        HStack {
+            Spacer()
+            switch state {
+            case .none:
+                button("Load earlier output")
+            case .loaded(more: true):
+                button("Load more")
+            case .loading:
+                ProgressView().tint(TerminalRenderer.foreground).padding(.vertical, 6)
+            case .loaded(more: false):
+                note("Start of available output")
+            case .empty:
+                note("No earlier output")
+            case .failed(let message):
+                VStack(spacing: 4) {
+                    note(message)
+                    button("Try again")
+                }
+            }
+            Spacer()
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func button(_ title: String) -> some View {
+        Button(action: load) {
+            Label(title, systemImage: "arrow.up.to.line")
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.08), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(TerminalRenderer.foreground.opacity(0.85))
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(TerminalRenderer.foreground.opacity(0.5))
+    }
+}
+
+/// Where loaded history ends and the live screen begins.
+private struct LiveDivider: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(Color.accentColor.opacity(0.5)).frame(height: 1)
+            Label("Live", systemImage: "dot.radiowaves.left.and.right")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .fixedSize()
+            Rectangle().fill(Color.accentColor.opacity(0.5)).frame(height: 1)
+        }
+        .padding(.vertical, 10)
     }
 }
 

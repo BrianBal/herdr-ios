@@ -117,6 +117,25 @@ public actor GatewayClient {
         return r.snapshot
     }
 
+    /// Recent output of a pane, oldest first, ending with its current screen.
+    /// Shells give their scrollback with colors. Agents draw their own
+    /// screen, so their history comes from herdr's agent reader, which only
+    /// returns plain text; `truncated` means there's more than `lines`.
+    public func history(paneId: String, agent: Bool, lines: Int) async throws -> (text: String, truncated: Bool) {
+        let r: PaneReadResult
+        if agent {
+            r = try await call("agent.read", params: [
+                "target": .string(paneId), "source": "recent", "lines": .number(Double(lines)), "format": "text",
+            ], timeout: 30)
+        } else {
+            r = try await call("pane.read", params: [
+                "pane_id": .string(paneId), "source": "recent", "lines": .number(Double(lines)),
+                "format": "ansi", "strip_ansi": false,
+            ], timeout: 30)
+        }
+        return (r.read.text, r.read.truncated ?? false)
+    }
+
     /// Creates a workspace (without stealing focus on the Mac) and returns its id.
     public func createWorkspace(label: String?, cwd: String?) async throws -> String {
         var params: [String: JSONValue] = ["focus": false]
@@ -326,4 +345,12 @@ private struct WatchStarted: Decodable, Sendable {
 private struct WorkspaceCreatedResult: Decodable, Sendable {
     struct Created: Decodable, Sendable { let workspaceId: String }
     let workspace: Created
+}
+
+private struct PaneReadResult: Decodable, Sendable {
+    struct Read: Decodable, Sendable {
+        let text: String
+        let truncated: Bool?
+    }
+    let read: Read
 }
