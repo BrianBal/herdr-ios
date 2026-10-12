@@ -253,6 +253,32 @@ import Testing
         #expect(segs[4].lines[0].plainText.contains("Worked for"))  // Codex footer
     }
 
+    // Claude while a tool runs: its gray ⏺ blinks (a gray space on the off beat),
+    // with gray output and a gray summary of earlier calls. Both beats must split
+    // the same way, or the reply's copy buttons flash.
+    static func gray(_ s: String) -> String { "\(esc)[38;2;153;153;153m\(s)\(esc)[0m" }
+    static func runningTool(markerOn: Bool) -> String {
+        [
+            "\(esc)[38;2;255;255;255m⏺\(esc)[0m Checking the frames now.",
+            "  " + gray("Ran 3 shell commands"),
+            "",
+            gray(markerOn ? "⏺ " : "  ") + "Capturing visible frames",
+            gray("  ⎿  $ herdr pane read w5:p1"),
+            "",
+            "\(esc)[38;2;215;119;87m✻ Coalescing…\(esc)[0m",
+        ].joined(separator: "\r\n")
+    }
+
+    @Test func runningToolCallDoesNotFlash() {
+        let on = TerminalSegmenter.segment(ANSIParser.parse(Self.runningTool(markerOn: true)), columns: 60)
+        let off = TerminalSegmenter.segment(ANSIParser.parse(Self.runningTool(markerOn: false)), columns: 60)
+        #expect(on.map(\.kind) == [.message, .plain])
+        #expect(off.map(\.kind) == on.map(\.kind))
+        #expect(on[0].copyText == "Checking the frames now.")
+        #expect(off[0].copyText == on[0].copyText)
+        #expect(on[1].copyText == nil)
+    }
+
     @Test func messageThatIsOnlyCodeOffersCodeCopy() {
         let text = "⏺ ok\r\n  " + Self.lav("make build")
         let segs = TerminalSegmenter.segment(ANSIParser.parse(text))

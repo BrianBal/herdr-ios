@@ -7,7 +7,11 @@ import Foundation
 //     `•` for Codex) and continues through indented lines until the next
 //     column-0 line or a horizontal rule (Claude's input box is fenced by rules).
 //   * Tool calls use the same markers (`⏺ Bash(…)`, `• Ran …`, `• Edited …`); they are kept
-//     as plain text without copy buttons.
+//     as plain text without copy buttons. Claude colors a tool call's ⏺ (gray while it
+//     runs, then green or red) where a reply's is white, and blinks the running one: on
+//     the off beat the cell is a gray space. Its output (`⎿ …`) and summaries (`Ran 3
+//     shell commands`) are all gray. None of these continue a message, or the message's
+//     buttons would come and go with the blink.
 //   * Neither agent prints ``` fences. Code is rendered fully syntax-colored,
 //     while prose is default-colored with short colored spans for inline code,
 //     so a run of lines that are almost entirely colored is a code block.
@@ -102,7 +106,7 @@ public enum TerminalSegmenter {
     /// deep indents are right-aligned notices, and "Worked for …" is Codex's footer.
     static func isContinuation(_ line: StyledLine) -> Bool {
         let text = line.plainText
-        guard text.first == " " else { return false }
+        guard text.first == " ", !isBlinkedOffMarker(line), !isChrome(line) else { return false }
         let indent = text.prefix(while: { $0 == " " }).count
         if indent >= maxContinuationIndent { return false }
         return !text.dropFirst(indent).hasPrefix("Worked for ")
@@ -144,11 +148,45 @@ public enum TerminalSegmenter {
     static func isAgentMessageStart(_ line: StyledLine) -> Bool {
         let text = line.plainText
         guard let first = text.first, messageMarkers.contains(first) else { return false }
+        if let marker = line.runs.first?.style.fg, isToolMarkerColor(marker) { return false }
         let rest = text.dropFirst().drop(while: { $0 == " " })
         guard text.dropFirst().first == " ", !rest.isEmpty else { return false }
         let body = String(rest)
         let range = NSRange(body.startIndex..., in: body)
         return toolCall.firstMatch(in: body, range: range) == nil
+    }
+
+    /// Claude's secondary gray: tool calls in progress, tool output, summaries.
+    static func isChromeGray(_ c: TermColor) -> Bool {
+        guard case .rgb(let r, let g, let b) = c else { return false }
+        return r == g && g == b && (90...180).contains(r)
+    }
+
+    /// A marker colored other than as a reply's (white, black or the default):
+    /// Claude's gray, green or red tool-call ⏺.
+    static func isToolMarkerColor(_ c: TermColor) -> Bool {
+        guard case .rgb(let r, let g, let b) = c else { return false }
+        if r == g, g == b { return (90...180).contains(r) }
+        return true
+    }
+
+    /// A running tool call on the off beat of its blink: the marker cell is a
+    /// colored space, then the call's text two columns in.
+    static func isBlinkedOffMarker(_ line: StyledLine) -> Bool {
+        guard let first = line.runs.first, (1...2).contains(first.text.count),
+              first.text.allSatisfy({ $0 == " " }), isToolMarkerColor(first.style.fg) else { return false }
+        let text = line.plainText
+        return text.prefix(while: { $0 == " " }).count == 2 && text.count > 2
+    }
+
+    /// Every visible character is in the secondary gray.
+    static func isChrome(_ line: StyledLine) -> Bool {
+        var any = false
+        for run in line.runs where run.text.contains(where: { $0 != " " }) {
+            guard isChromeGray(run.style.fg) else { return false }
+            any = true
+        }
+        return any
     }
 
     /// Almost every visible character is explicitly colored (syntax highlighting).
