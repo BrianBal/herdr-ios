@@ -354,6 +354,7 @@ export function createGateway({ config, herdr, push, log = () => {} }: GatewayOp
           widget_token: hex(params?.widget_token),
           activity_start_token: hex(params?.activity_start_token),
           live_activity: params?.live_activity !== false,
+          gateway_id: typeof params?.gateway_id === "string" ? params.gateway_id.slice(0, 64) : undefined,
         });
         st.pushToken = token;
         if (isNew) log(`push: registered ${name ?? "device"} (${env})`);

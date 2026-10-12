@@ -7,6 +7,7 @@ import SwiftUI
 /// rather than a sheet.
 struct HomeView: View {
     @Environment(HerdrStore.self) private var store
+    @Environment(AppModel.self) private var app
     @Binding var showAgents: Bool
     var sidebarSelection: Binding<Route?>? = nil
     /// Opens a workspace (used after creating one).
@@ -30,7 +31,19 @@ struct HomeView: View {
                 }
             }
         }
-        .navigationTitle("herdr")
+        // With more than one gateway, the title names the one shown and switches between them.
+        .navigationTitle(app.gateways.count > 1 ? app.activeGateway?.name ?? "herdr" : "herdr")
+        // Inline, the title shows a chevron; a large title hides that it's a menu.
+        .navigationBarTitleDisplayMode(app.gateways.count > 1 ? .inline : .automatic)
+        .toolbarTitleMenu {
+            if app.gateways.count > 1 {
+                ForEach(app.gateways) { g in
+                    Button { app.switchTo(g.id) } label: {
+                        if g.id == app.activeId { Label(g.name, systemImage: "checkmark") } else { Text(g.name) }
+                    }
+                }
+            }
+        }
         .safeAreaInset(edge: .top, spacing: 0) { ConnectionBanner() }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {

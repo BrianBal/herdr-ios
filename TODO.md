@@ -23,6 +23,9 @@ Most valuable first.
   - [x] New tab / split / close from the phone: the ⊞ pane menu in a workspace (also holds "Start in this pane").
 - [x] **Quick prompts**: one-tap chips above the composer (separate lists for agents and shells); "+ Save" turns the typed text into a chip; long-press to edit or remove; Settings → Quick prompts to reorder or reset.
 
+- [x] **More than one gateway**: Settings → Gateways lists them (add, rename, change URL/token, remove); the home title switches between them. One is connected at a time; all of them notify, and a notification opens on the gateway that sent it (`gateway_id` in the push).
+  - [ ] Install the gateway on the Linux agent box and pair it.
+
 ## Reliability
 
 - [x] **Keep the Mac awake while agents work**: the gateway holds `caffeinate -is` while any agent is working or blocked, released 2 minutes after they're all quiet (`keep_awake` in config.toml). A lid closed on battery still sleeps.

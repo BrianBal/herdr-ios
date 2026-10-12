@@ -7,7 +7,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("terminal.fontSize") private var fontSize = 11.0
     @AppStorage("terminal.wrap") private var wrap = true
-    @State private var confirmUnpair = false
+    @State private var addingGateway = false
+    @State private var removing: SavedGateway?
     @State private var testResult: String?
     @State private var testing = false
     @Environment(\.openURL) private var openURL
@@ -15,8 +16,8 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Gateway") {
-                    LabeledContent("Host", value: app.endpoint?.displayHost ?? "—")
+                gatewaysSection
+                Section(app.activeGateway.map { "Connected gateway · \($0.name)" } ?? "Connected gateway") {
                     LabeledContent("Signed in as", value: store.info?.user ?? "local")
                     LabeledContent("Status", value: statusText)
                     if let info = store.info {
@@ -39,24 +40,45 @@ struct SettingsView: View {
                     }
                     Toggle("Wrap long lines", isOn: $wrap)
                 }
-                Section {
-                    Button("Unpair this device", role: .destructive) { confirmUnpair = true }
-                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
-            .confirmationDialog("Unpair from \(app.endpoint?.displayHost ?? "gateway")?",
-                                isPresented: $confirmUnpair, titleVisibility: .visible) {
-                Button("Unpair", role: .destructive) {
-                    dismiss()
-                    app.unpair()
+            .sheet(isPresented: $addingGateway) { PairView(onPaired: { addingGateway = false }) }
+            .confirmationDialog(removing.map { "Remove “\($0.name)”?" } ?? "",
+                                isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
+                                titleVisibility: .visible, presenting: removing) { g in
+                Button("Remove", role: .destructive) {
+                    if app.gateways.count == 1 { dismiss() }
+                    app.remove(g.id)
                 }
-            } message: {
-                Text("The token is removed from this iPhone. Scan the pairing code again to reconnect.")
+            } message: { _ in
+                Text("Its token is deleted from this iPhone and it stops sending notifications here. Scan its pairing code to add it again.")
             }
+        }
+    }
+
+    private var gatewaysSection: some View {
+        Section {
+            ForEach(app.gateways) { g in
+                NavigationLink {
+                    GatewayEditView(gateway: g, onRemove: { removing = g })
+                } label: {
+                    GatewayRow(gateway: g, active: g.id == app.activeId)
+                }
+                .swipeActions {
+                    Button("Remove", role: .destructive) { removing = g }
+                }
+            }
+            Button { addingGateway = true } label: {
+                Label("Add gateway", systemImage: "plus")
+            }
+        } header: {
+            Text("Gateways")
+        } footer: {
+            Text("One herdr per gateway, each with its own pairing code. The app shows one at a time; switch from the title on the home screen. They all send notifications.")
         }
     }
 
@@ -143,6 +165,114 @@ struct SettingsView: View {
         case .waiting: "Reconnecting"
         case .unauthorized: "Rejected"
         case .idle: "Paused"
+        }
+    }
+}
+
+struct GatewayRow: View {
+    let gateway: SavedGateway
+    let active: Bool
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(gateway.name)
+                Text(gateway.url.host ?? gateway.url.absoluteString)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if active {
+                Image(systemName: "checkmark").foregroundStyle(.tint)
+                    .accessibilityLabel("Connected")
+            }
+        }
+    }
+}
+
+/// Rename a gateway, point it at a new URL or token, switch to it, or remove it.
+struct GatewayEditView: View {
+    @Environment(AppModel.self) private var app
+    @Environment(\.dismiss) private var dismiss
+    let gateway: SavedGateway
+    var onRemove: () -> Void
+    @State private var name = ""
+    @State private var url = ""
+    @State private var token = ""
+    @State private var saving = false
+    @State private var error: String?
+
+    private var dirty: Bool {
+        name != gateway.name || url != gateway.url.absoluteString || !token.isEmpty
+    }
+
+    var body: some View {
+        Form {
+            Section("Name") {
+                TextField(SavedGateway.defaultName(for: gateway.url), text: $name)
+            }
+            Section {
+                TextField("wss://host.tailnet.ts.net/ws", text: $url)
+                    .textContentType(.URL)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                TextField("New token (leave blank to keep)", text: $token)
+                    // Plain text, not SecureField: iOS offers to save a secure field in Passwords.
+                    .font(.body.monospaced())
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } header: {
+                Text("Connection")
+            } footer: {
+                Text("A new URL or token is checked by connecting before it's saved.")
+            }
+            if let error {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                }
+            }
+            if gateway.id != app.activeId {
+                Section {
+                    Button("Connect to this gateway") {
+                        app.switchTo(gateway.id)
+                        dismiss()
+                    }
+                }
+            }
+            Section {
+                Button("Remove gateway", role: .destructive, action: onRemove)
+            }
+        }
+        .navigationTitle(gateway.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                if saving {
+                    ProgressView()
+                } else {
+                    Button("Save") { save() }.disabled(!dirty || url.isEmpty)
+                }
+            }
+        }
+        .onAppear {
+            name = gateway.name
+            url = gateway.url.absoluteString
+        }
+        .onChange(of: app.gateway(gateway.id) == nil) { _, gone in if gone { dismiss() } }
+    }
+
+    private func save() {
+        saving = true
+        error = nil
+        Task {
+            defer { saving = false }
+            do {
+                try await app.update(gateway.id, name: name, url: url, token: token)
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 }

@@ -39,6 +39,8 @@ export interface Device {
   live_activity?: boolean;
   /** When we push-started an activity whose update token hasn't arrived yet. */
   activity_pending?: number;
+  /** The app's id for this gateway, sent back in alerts so it can open the right one. */
+  gateway_id?: string;
 }
 
 export interface PushMessage {
@@ -652,7 +654,7 @@ export class Notifier {
           pushType: "alert",
           topic: this.o.config.topic,
           priority: 10,
-          payload: apnsPayload(msg),
+          payload: d.gateway_id ? { ...apnsPayload(msg), gateway_id: d.gateway_id } : apnsPayload(msg),
           collapseId: msg.collapseId,
         });
         if (r.status === 200) {

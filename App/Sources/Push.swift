@@ -121,11 +121,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                                             withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
         let paneId = info["pane_id"] as? String
+        let gatewayId = info["gateway_id"] as? String
         let action = response.actionIdentifier
         let text = (response as? UNTextInputNotificationResponse)?.userText
         nonisolated(unsafe) let done = completionHandler
         Task { @MainActor in
-            await app.handleNotification(action: action, paneId: paneId, text: text)
+            await app.handleNotification(action: action, paneId: paneId, gatewayId: gatewayId, text: text)
             done()
         }
     }

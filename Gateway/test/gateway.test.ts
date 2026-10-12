@@ -288,9 +288,9 @@ describe("push", () => {
     await c.open();
     c.send({ id: 1, method: "gw.push_register", params: { token: "nope" } });
     expect((await c.next((m) => m.id === 1)).error.code).toBe("invalid_request");
-    c.send({ id: 2, method: "gw.push_register", params: { token: phone, environment: "development", name: "taco" } });
+    c.send({ id: 2, method: "gw.push_register", params: { token: phone, environment: "development", name: "taco", gateway_id: "g-mac" } });
     expect((await c.next((m) => m.id === 2)).result.type).toBe("push_registered");
-    expect(new DeviceStore(dir).list().map((d) => d.name)).toEqual(["taco"]);
+    expect(new DeviceStore(dir).list().map((d) => [d.name, d.gateway_id])).toEqual([["taco", "g-mac"]]);
     expect(gw.activeTokens().has(phone)).toBe(true);
     c.close();
     await Bun.sleep(50);
@@ -315,6 +315,8 @@ describe("push", () => {
     const alerts = sent.filter((r) => r.pushType === "alert");
     expect(alerts.map((r) => r.token)).toEqual([phone]);
     expect((alerts[0].payload.aps as any).alert.body).toBe("Needs your input: Fix the charts");
+    // Tells the app which of its gateways this came from.
+    expect(alerts[0].payload.gateway_id).toBe("g-mac");
     c.close();
   });
 

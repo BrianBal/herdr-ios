@@ -40,7 +40,8 @@ iPhone app ──wss (Tailscale)──▶ tailscale serve :8443 ──▶ gatewa
 3. Build the app: `cd App && xcodegen generate`, open `Herdr.xcodeproj`, set
    your team and bundle ID, run it on a device.
 4. Pair: `herdr plugin pane open --plugin bal.ios-gateway --entrypoint pair`
-   shows a QR code and a pairing link.
+   shows a QR code and a pairing link. More machines: install the gateway on
+   each and add it in Settings → Gateways; switch from the home screen title.
 5. Optional, for push: create an APNs key and run
    `sh Gateway/bin/gateway-ctl push-key <AuthKey.p8> <KEY_ID>`.
 

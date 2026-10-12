@@ -44,6 +44,8 @@ struct RootView: View {
             if store.isConnected { await app.push.requestAuthorizationIfFirstTime() }
         }
         .onChange(of: route) { _, route in selectedPaneId = route?.paneId }
+        // Workspace ids repeat across machines (both have a w1), so start over.
+        .onChange(of: app.activeId) { route = nil }
         .onChange(of: store.snapshot?.workspaces.map(\.workspaceId)) { _, ids in
             // The open workspace was closed (here or on the Mac): back to the list.
             if let ids, let route, !ids.contains(route.workspaceId) { self.route = nil }

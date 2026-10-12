@@ -21,6 +21,7 @@ struct StatusPill: View {
 struct ConnectionBanner: View {
     @Environment(HerdrStore.self) private var store
     @Environment(AppModel.self) private var app
+    @State private var repairing = false
 
     var body: some View {
         switch store.phase {
@@ -37,7 +38,8 @@ struct ConnectionBanner: View {
             }
         case .unauthorized(let message):
             banner(icon: "lock.trianglebadge.exclamationmark", text: message, tint: .red,
-                   action: ("Re-pair", { app.unpair() }))
+                   action: ("Re-pair", { repairing = true }))
+                .sheet(isPresented: $repairing) { PairView(onPaired: { repairing = false }) }
         }
     }
 

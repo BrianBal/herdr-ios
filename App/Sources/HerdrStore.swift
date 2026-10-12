@@ -71,7 +71,7 @@ final class HerdrStore {
         phase = .idle
     }
 
-    /// Forget everything (used when unpairing).
+    /// Forget the last gateway's state (switching or removing gateways).
     func reset() {
         snapshot = nil
         info = nil

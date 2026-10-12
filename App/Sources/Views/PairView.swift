@@ -4,6 +4,8 @@ import VisionKit
 
 struct PairView: View {
     @Environment(AppModel.self) private var app
+    /// Set when shown as a sheet (adding another gateway, re-pairing); called once paired.
+    var onPaired: (() -> Void)?
     @State private var urlText = ""
     @State private var token = ""
     @State private var connecting = false
@@ -56,7 +58,9 @@ struct PairView: View {
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    SecureField("Token", text: $token)
+                    TextField("Token", text: $token)
+                        // Plain text, not SecureField: iOS offers to save a secure field in Passwords.
+                        .font(.body.monospaced())
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     Button {
@@ -78,6 +82,11 @@ struct PairView: View {
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if let onPaired {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onPaired) }
+                }
+            }
             .sheet(isPresented: $scanning) {
                 QRScannerView { payload in
                     scanning = false
@@ -106,7 +115,12 @@ struct PairView: View {
         connecting = true
         Task {
             defer { connecting = false }
-            do { try await app.pair(endpoint) } catch { self.error = error.localizedDescription }
+            do {
+                try await app.pair(endpoint)
+                onPaired?()
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 }
