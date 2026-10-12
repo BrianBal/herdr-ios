@@ -290,6 +290,54 @@ final class HerdrStore {
         let problem: String?
     }
 
+    // MARK: Tabs and panes
+
+    enum SplitDirection: String { case right, down }
+
+    /// Opens a tab in the workspace; returns its pane once the snapshot has it.
+    func newTab(in workspaceId: String, cwd: String?) async -> String? {
+        var params: [String: JSONValue] = ["workspace_id": .string(workspaceId)]
+        if let cwd { params["cwd"] = .string(cwd) }
+        return await createPane("tab.create", params, paneKey: "root_pane")
+    }
+
+    /// Splits a pane; returns the new pane once the snapshot has it.
+    func split(_ paneId: String, _ direction: SplitDirection, cwd: String?) async -> String? {
+        var params: [String: JSONValue] = ["target_pane_id": .string(paneId), "direction": .string(direction.rawValue)]
+        if let cwd { params["cwd"] = .string(cwd) }
+        return await createPane("pane.split", params, paneKey: "pane")
+    }
+
+    /// Closes a pane (and its tab, if it was the last one; and the workspace,
+    /// if that was its last tab).
+    @discardableResult
+    func closePane(_ paneId: String) async -> Bool {
+        let ok = await perform("pane.close", ["pane_id": .string(paneId)])
+        if ok, let client { try? await refresh(using: client) }
+        return ok
+    }
+
+    private struct CreatedPane: Decodable, Sendable {
+        struct P: Decodable, Sendable { let paneId: String }
+        let pane: P?
+        let rootPane: P?
+    }
+
+    private func createPane(_ method: String, _ params: [String: JSONValue], paneKey: String) async -> String? {
+        guard let client else {
+            actionError = "Not connected to herdr."
+            return nil
+        }
+        do {
+            let r: CreatedPane = try await client.call(method, params: .object(params))
+            try? await refresh(using: client)
+            return (paneKey == "pane" ? r.pane : r.rootPane)?.paneId
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
     // MARK: Agents
 
     /// Agents installed on the Mac that herdr can start (claude, codex, …).

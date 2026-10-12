@@ -20,7 +20,7 @@ Most valuable first.
 ## Doing more from the phone
 
 - [x] **Start an agent**: New Workspace has an Agent picker (installed agents, via `gw.agent_kinds`) and an optional first prompt, sent once the agent is ready; shell panes get a ✨ "Start in this pane" menu.
-  - [ ] New tab / split from the phone (`tab.create`, `pane.split`).
+  - [x] New tab / split / close from the phone: the ⊞ pane menu in a workspace (also holds "Start in this pane").
 - [x] **Quick prompts**: one-tap chips above the composer (separate lists for agents and shells); "+ Save" turns the typed text into a chip; long-press to edit or remove; Settings → Quick prompts to reorder or reset.
 
 ## Reliability

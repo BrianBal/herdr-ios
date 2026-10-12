@@ -77,20 +77,9 @@ struct WorkspaceView: View {
         .navigationTitle(ws.label)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if let current, !current.hasAgent, !store.agentKinds.isEmpty {
+            if let current {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Section("Start in this pane") {
-                            ForEach(store.agentKinds, id: \.self) { kind in
-                                Button(AgentKind.displayName(kind)) {
-                                    Task { await store.startAgent(kind, in: current.paneId, nameHint: ws.label, prompt: nil) }
-                                }
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "sparkles")
-                    }
-                    .accessibilityLabel("Start an agent")
+                    PaneMenu(pane: current, workspaceLabel: ws.label, selectedPaneId: $selectedPaneId)
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -508,6 +497,68 @@ struct PaneTerminalView: View {
     private struct WatchKey: Hashable {
         let generation: Int
         let paneId: String
+    }
+}
+
+/// What you can do with the selected pane: new tab, splits, start an agent
+/// in a shell, close it.
+private struct PaneMenu: View {
+    @Environment(HerdrStore.self) private var store
+    let pane: Pane
+    let workspaceLabel: String
+    @Binding var selectedPaneId: String?
+    @State private var confirmClose = false
+
+    private var cwd: String? { pane.foregroundCwd ?? pane.cwd }
+
+    var body: some View {
+        Menu {
+            Section {
+                Button { open { await store.newTab(in: pane.workspaceId, cwd: cwd) } } label: {
+                    Label("New tab", systemImage: "plus.square.on.square")
+                }
+                Button { open { await store.split(pane.paneId, .right, cwd: cwd) } } label: {
+                    Label("Split right", systemImage: "rectangle.split.2x1")
+                }
+                Button { open { await store.split(pane.paneId, .down, cwd: cwd) } } label: {
+                    Label("Split down", systemImage: "rectangle.split.1x2")
+                }
+            }
+            if !pane.hasAgent, !store.agentKinds.isEmpty {
+                Section("Start in this pane") {
+                    ForEach(store.agentKinds, id: \.self) { kind in
+                        Button {
+                            Task { await store.startAgent(kind, in: pane.paneId, nameHint: workspaceLabel, prompt: nil) }
+                        } label: {
+                            Label(AgentKind.displayName(kind), systemImage: "sparkles")
+                        }
+                    }
+                }
+            }
+            Section {
+                Button(role: .destructive) { confirmClose = true } label: {
+                    Label("Close pane", systemImage: "xmark.square")
+                }
+            }
+        } label: {
+            Image(systemName: "square.grid.2x2")
+        }
+        .accessibilityLabel("Pane actions")
+        .disabled(!store.isConnected)
+        .confirmationDialog("Close this pane?", isPresented: $confirmClose, titleVisibility: .visible) {
+            Button("Close Pane", role: .destructive) { Task { await store.closePane(pane.paneId) } }
+        } message: {
+            Text(pane.hasAgent
+                 ? "This ends \(pane.displayAgent ?? pane.agent ?? "the agent") running in it on your Mac."
+                 : "This ends the shell running in it on your Mac.")
+        }
+    }
+
+    /// Runs a create action and jumps to the pane it made.
+    private func open(_ create: @escaping () async -> String?) {
+        Task {
+            if let id = await create() { withAnimation { selectedPaneId = id } }
+        }
     }
 }
 
