@@ -11,6 +11,7 @@ struct ComposerBar: View {
     @State private var text = ""
     @State private var sending = false
     @State private var attachments: [PhotoAttachment] = []
+    @State private var completions: ShellCompletions?
     @FocusState private var focused: Bool
 
     private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -32,7 +33,11 @@ struct ComposerBar: View {
             }
             if pane.agentStatus != .blocked {
                 QuickPromptBar(kind: pane.hasAgent ? .agent : .shell, draft: trimmed,
-                               enabled: store.isConnected && !sending) { prompt in
+                               completions: currentCompletions,
+                               enabled: store.isConnected && !sending) { candidate in
+                    text = ShellCompletions.apply(candidate, to: text, replacing: completions?.word ?? "")
+                    focused = true
+                } send: { prompt in
                     sendNow(prompt)
                 } onEdit: { prompt in
                     text = prompt
@@ -53,6 +58,31 @@ struct ComposerBar: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
+        .onChange(of: text) { _, new in
+            // The keyboard's smart dashes and quotes ("--" → "—") break commands and flags.
+            let plain = ShellInput.plain(new)
+            if plain != new { text = plain }
+        }
+        .task(id: pane.hasAgent ? nil : text) { await complete() }
+    }
+
+    /// Asks the gateway to complete the shell line's last word, shortly after typing pauses.
+    private func complete() async {
+        guard !pane.hasAgent, !text.isEmpty, !text.contains("\n") else {
+            completions = nil
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+        if Task.isCancelled { return }
+        let line = text
+        let found = await store.completions(for: pane.paneId, line: line)
+        if !Task.isCancelled { completions = found }
+    }
+
+    /// Completions that still fit what's in the field.
+    private var currentCompletions: [String] {
+        guard let completions, !text.isEmpty, text.hasSuffix(completions.word) else { return [] }
+        return completions.candidates
     }
 
     private var field: some View {
@@ -62,9 +92,10 @@ struct ComposerBar: View {
             .focused($focused)
             .accessibilityIdentifier("composer-field")
             .submitLabel(.return)
-            // Prose for agents; commands for shells, where "Echo" or an autocorrected flag breaks things.
+            // Prose for agents; commands for shells, where "Echo" breaks things. No
+            // autocorrect for either: it rewrites flags, paths and code names.
             .textInputAutocapitalization(pane.hasAgent ? .sentences : .never)
-            .autocorrectionDisabled(!pane.hasAgent)
+            .autocorrectionDisabled()
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -151,12 +182,15 @@ private struct SendButton: View {
 
 /// Chips for the saved quick prompts; tap to send. With text in the
 /// composer, a "+" chip saves it as a new one. Long-press a chip to edit it
-/// (it moves into the composer) or remove it.
+/// (it moves into the composer) or remove it. Shell panes put tab
+/// completions for the word being typed first; tapping one fills it in.
 private struct QuickPromptBar: View {
     @Environment(AppModel.self) private var app
     let kind: QuickPrompts.Kind
     let draft: String
+    var completions: [String] = []
     let enabled: Bool
+    let complete: (String) -> Void
     let send: (String) -> Void
     let onEdit: (String) -> Void
     @State private var sent = 0
@@ -164,9 +198,22 @@ private struct QuickPromptBar: View {
     var body: some View {
         let prompts = app.quickPrompts.list(kind)
         let canSave = !draft.isEmpty && !prompts.contains(draft) && !draft.contains("\n")
-        if !prompts.isEmpty || canSave {
+        if !prompts.isEmpty || canSave || !completions.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
+                    ForEach(completions, id: \.self) { candidate in
+                        Button { complete(candidate) } label: {
+                            Text(candidate)
+                                .font(.footnote.monospaced().weight(.medium))
+                                .lineLimit(1)
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 6)
+                                .overlay(Capsule().strokeBorder(.tint.opacity(0.6)))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tint)
+                        .accessibilityLabel("Complete \(candidate)")
+                    }
                     ForEach(prompts, id: \.self) { prompt in
                         Button {
                             sent += 1

@@ -17,6 +17,7 @@ import type { GatewayConfig } from "./config";
 import { HerdrSocket, HerdrUnavailable, type HerdrResponse } from "./herdr";
 import type { ApnsEnvironment, DeviceStore, Notifier } from "./push";
 import { claudeTranscript } from "./transcript";
+import { complete, looksRemote } from "./complete";
 import { UploadError, type Uploads } from "./uploads";
 
 export const GATEWAY_VERSION = "0.1.0";
@@ -348,6 +349,24 @@ export function createGateway({ config, herdr, push, uploads, log = () => {} }: 
           send(ws, { id, result: { type: "uploaded", path } });
         } catch (e: any) {
           send(ws, errorMsg(id, e instanceof UploadError ? "invalid_request" : "gateway_error", e.message));
+        }
+        return;
+      }
+      case "gw.complete": {
+        // Tab completion for a shell pane's command line (see complete.ts).
+        const paneId = String(params?.pane_id ?? "");
+        const line = String(params?.line ?? "").slice(-4096);
+        try {
+          const info = await herdr.call("pane.get", { pane_id: paneId }, 3000);
+          const pane = info.result?.pane;
+          if (!pane) return send(ws, errorMsg(id, "not_found", "no such pane"));
+          if (looksRemote(pane.terminal_title_stripped ?? pane.terminal_title)) {
+            return send(ws, { id, result: { type: "completions", word: "", candidates: [] } });
+          }
+          const c = await complete(line, pane.foreground_cwd ?? pane.cwd);
+          send(ws, { id, result: { type: "completions", ...c } });
+        } catch (e: any) {
+          send(ws, errorMsg(id, "gateway_error", e.message));
         }
         return;
       }

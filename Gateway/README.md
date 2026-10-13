@@ -100,6 +100,15 @@ pane's title, else the newest) and renders it like Claude's screen: prompts,
 replies with Markdown as terminal styling, one-line tool calls. Thinking,
 tool output and subagent traffic are left out. Only the last 8 MB is read.
 
+## Shell completion
+
+`gw.complete {pane_id, line}` returns `{word, candidates}` for the last word of
+a shell pane's command line, from bash's `compgen` run in the pane's folder:
+commands for the first word, folders after `cd`, files otherwise (hidden ones
+only when the word starts with "."). It can't see the pane shell's own aliases
+and functions, and a pane whose title names another host (`user@host:`) gets
+nothing, since its files aren't here.
+
 ## Keeping the Mac awake
 
 While any agent is working or blocked, the gateway holds `caffeinate -is`

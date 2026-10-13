@@ -516,3 +516,17 @@ extension ScrollbackTests {
         #expect(head.runs.last?.style.bold == true)
     }
 }
+
+@Suite struct ShellInputTests {
+    @Test func undoesSmartPunctuation() {
+        #expect(ShellInput.plain("ls —all ‘a b’ “c”") == "ls --all 'a b' \"c\"")
+        #expect(ShellInput.plain("git log -n 3") == "git log -n 3")
+    }
+
+    @Test func appliesCompletion() {
+        #expect(ShellCompletions.apply("src/", to: "cd s", replacing: "s") == "cd src/")
+        #expect(ShellCompletions.apply("setup.sh", to: "cat s", replacing: "s") == "cat setup.sh ")
+        #expect(ShellCompletions.apply("README.md", to: "cat ", replacing: "") == "cat README.md ")
+        #expect(ShellCompletions.apply("git", to: "gi", replacing: "gi") == "git ")
+    }
+}

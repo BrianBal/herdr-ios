@@ -163,6 +163,11 @@ public actor GatewayClient {
         return r.kinds
     }
 
+    /// Tab completion for a shell pane's command line, from the gateway's machine.
+    public func complete(paneId: String, line: String) async throws -> ShellCompletions {
+        try await call("gw.complete", params: ["pane_id": .string(paneId), "line": .string(line)], timeout: 5)
+    }
+
     private func callRaw(_ method: String, params: JSONValue, timeout: TimeInterval) async throws -> Data {
         guard closedReason == nil, let task else { throw GatewayError.notConnected }
         let id = "c\(nextId)"

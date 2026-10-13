@@ -235,6 +235,14 @@ final class HerdrStore {
         return await submit(Self.prompt(text, attaching: paths), to: pane)
     }
 
+    /// Tab completions for a shell pane's command line; nil when there are none
+    /// or the gateway can't say (an older gateway, a dropped connection).
+    func completions(for paneId: String, line: String) async -> ShellCompletions? {
+        guard let client, isConnected else { return nil }
+        guard let c = try? await client.complete(paneId: paneId, line: line), !c.candidates.isEmpty else { return nil }
+        return c
+    }
+
     static func prompt(_ text: String, attaching paths: [String]) -> String {
         let lines = paths.map { "Attached image: \($0)" }.joined(separator: "\n")
         return text.isEmpty ? lines : "\(text)\n\n\(lines)"
