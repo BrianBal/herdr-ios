@@ -429,6 +429,16 @@ describe("push", () => {
     const update = sent.find((r) => r.pushType === "liveactivity" && r.token === activity);
     expect((update?.payload.aps as any).event).toBe("update");
     expect((update?.payload.aps as any)["content-state"].blocked).toBe(1);
+
+    // An older activity ending doesn't drop the running one's token; this one ending does.
+    c.send({ id: 2, method: "gw.activity_ended", params: { token: tab, activity_token: "8".repeat(64) } });
+    await c.next((m) => m.id === 2);
+    expect(devices.get(tab)?.activity_token).toBe(activity);
+    c.send({ id: 3, method: "gw.activity_ended", params: { token: tab, activity_token: activity } });
+    await c.next((m) => m.id === 3);
+    expect(devices.get(tab)?.activity_token).toBeUndefined();
+    c.send({ id: 4, method: "gw.activity_register", params: { token: tab, activity_token: activity } });
+    await c.next((m) => m.id === 4);
     c.close();
 
     // Quiet (activityQuietMs is 0 here): the activity ends and the token is forgotten.

@@ -35,7 +35,7 @@ final class AppModel {
         }
         store.onBoard = { [unowned self] board in Task { await liveActivity.sync(board) } }
         liveActivity.onRegistrationChange = { [unowned self] in store.pushRegistrationChanged() }
-        liveActivity.onActivityToken = { [unowned self] token in Task { await reportActivity(token: token) } }
+        liveActivity.onActivityToken = { [unowned self] token, ended in Task { await reportActivity(token: token, ended: ended) } }
     }
 
     /// Written by the widget's push handler (AgentsPushHandler.tokenKey).
@@ -54,16 +54,15 @@ final class AppModel {
         await WidgetCenter.shared.currentPushInfo?.token.hex
     }
 
-    /// Tells the gateway which Live Activity to update (or that it ended). iOS
+    /// Tells the gateway which Live Activity to update (or that this one ended). iOS
     /// may have just woken the app in the background for this, so it uses a
     /// connection of its own when the store isn't connected.
-    private func reportActivity(token: String?) async {
+    private func reportActivity(token: String, ended: Bool) async {
         // The APNs token identifies this device to the gateway; it arrives shortly after launch.
         for _ in 0..<20 where push.deviceToken == nil { try? await Task.sleep(for: .milliseconds(250)) }
         guard let device = push.deviceToken, let endpoint else { return }
-        let method = token == nil ? "gw.activity_ended" : "gw.activity_register"
-        var params: [String: JSONValue] = ["token": .string(device)]
-        if let token { params["activity_token"] = .string(token) }
+        let method = ended ? "gw.activity_ended" : "gw.activity_register"
+        let params: [String: JSONValue] = ["token": .string(device), "activity_token": .string(token)]
         if let client = store.client, store.isConnected {
             try? await client.send(method, params: .object(params))
             return
@@ -154,6 +153,8 @@ final class AppModel {
         store.reset()
         AgentBoard.empty.save()
         WidgetCenter.shared.reloadAllTimelines()
+        // The summary showed the old gateway's agents; the new one starts its own.
+        Task { await liveActivity.endNow() }
         if let endpoint { store.start(endpoint) }
     }
 
@@ -171,6 +172,8 @@ final class AppModel {
         store.reset()
         AgentBoard.empty.save()
         WidgetCenter.shared.reloadAllTimelines()
+        // The summary showed the old gateway's agents; the new one starts its own.
+        Task { await liveActivity.endNow() }
         if let endpoint { store.start(endpoint) }
     }
 

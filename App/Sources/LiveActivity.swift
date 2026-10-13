@@ -31,12 +31,15 @@ final class LiveActivityManager {
     /// Live Activities are allowed for this app in iOS Settings.
     private(set) var systemEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
 
-    /// A running activity's update token arrived (or nil: it ended).
-    var onActivityToken: ((String?) -> Void)?
+    /// A running activity's update token arrived (ended false), or the
+    /// activity holding that token ended (ended true).
+    var onActivityToken: ((_ token: String, _ ended: Bool) -> Void)?
     /// Something the gateway registration carries changed.
     var onRegistrationChange: (() -> Void)?
 
     private var watched: Set<String> = []
+    /// Latest update token per activity id, to say which one ended.
+    private var tokens: [String: String] = [:]
     private var quietSince: Date?
 
     init() {
@@ -51,7 +54,14 @@ final class LiveActivityManager {
             }
         }
         Task {
-            for await activity in Activity<Attributes>.activityUpdates { watch(activity) }
+            // Only one summary at a time: a new one (pushed by a gateway or
+            // started here) replaces any left over, including ones whose
+            // gateway never got their token and so can't end them.
+            for await activity in Activity<Attributes>.activityUpdates {
+                watch(activity)
+                await Self.endAll(except: activity.id)
+                refreshRunning()
+            }
         }
         Task {
             for await allowed in ActivityAuthorizationInfo().activityEnablementUpdates { systemEnabled = allowed }
@@ -81,12 +91,17 @@ final class LiveActivityManager {
         guard watched.insert(activity.id).inserted else { return }
         refreshRunning()
         Task {
-            for await data in activity.pushTokenUpdates { onActivityToken?(data.hex) }
+            for await data in activity.pushTokenUpdates {
+                tokens[activity.id] = data.hex
+                onActivityToken?(data.hex, false)
+            }
         }
         Task {
             for await state in activity.activityStateUpdates {
                 refreshRunning()
-                if state == .ended || state == .dismissed { onActivityToken?(nil) }
+                if state == .ended || state == .dismissed, let token = tokens.removeValue(forKey: activity.id) {
+                    onActivityToken?(token, true)
+                }
             }
         }
     }
@@ -123,8 +138,10 @@ final class LiveActivityManager {
         }
     }
 
-    private nonisolated static func endAll() async {
-        for activity in Activity<Attributes>.activities { await activity.end(nil, dismissalPolicy: .immediate) }
+    private nonisolated static func endAll(except keep: String? = nil) async {
+        for activity in Activity<Attributes>.activities where activity.id != keep {
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
     }
 }
 

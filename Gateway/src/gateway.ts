@@ -391,7 +391,13 @@ export function createGateway({ config, herdr, push, uploads, log = () => {} }: 
       case "gw.activity_ended": {
         if (!push) return send(ws, errorMsg(id, "unavailable", "push is not enabled in this gateway"));
         const token = String(params?.token ?? "");
-        push.devices.update(token, { activity_token: undefined, activity_pending: undefined });
+        // Only forget the activity that ended: an older one ending must not
+        // drop the token of the one running now. No activity_token: forget any.
+        const ended = typeof params?.activity_token === "string" ? params.activity_token : undefined;
+        const current = push.devices.get(token)?.activity_token;
+        if (!ended || ended === current) {
+          push.devices.update(token, { activity_token: undefined, activity_pending: undefined });
+        }
         send(ws, { id, result: { type: "ok" } });
         return;
       }
