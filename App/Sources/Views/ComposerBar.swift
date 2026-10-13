@@ -28,7 +28,8 @@ struct ComposerBar: View {
             HStack(spacing: 8) {
                 TerminalToolbar(paneId: pane.paneId,
                                 mode: pane.agentStatus == .blocked ? .blockedAgent : pane.hasAgent ? .agent : .shell)
-                SendButton(enabled: (!trimmed.isEmpty || !attachments.isEmpty) && !sending && store.isConnected,
+                SendButton(enabled: !sending && store.isConnected,
+                           isReturn: trimmed.isEmpty && attachments.isEmpty,
                            sending: sending, action: send)
             }
             if pane.agentStatus != .blocked {
@@ -107,12 +108,20 @@ struct ComposerBar: View {
     }
 
     /// Empties the field right away (a slow send shouldn't look like it didn't
-    /// go) and puts the message back if it fails.
+    /// go) and puts the message back if it fails. With nothing typed it just
+    /// presses Return: picks a menu item, or runs a command recalled with ↑.
     private func send() {
         let message = trimmed
         let sentAttachments = attachments
-        guard !message.isEmpty || !sentAttachments.isEmpty else { return }
         sending = true
+        guard !message.isEmpty || !sentAttachments.isEmpty else {
+            text = ""
+            Task {
+                defer { sending = false }
+                await store.sendKeys(["enter"], to: pane.paneId)
+            }
+            return
+        }
         clear(sent: message)
         attachments = []
         Task {
@@ -150,6 +159,8 @@ struct ComposerBar: View {
 
 private struct SendButton: View {
     let enabled: Bool
+    /// Nothing to send: the button presses Return instead.
+    var isReturn = false
     /// While a send is in flight (photos take a moment): progress instead of the arrow.
     var sending = false
     let action: () -> Void
@@ -164,19 +175,22 @@ private struct SendButton: View {
                 if sending {
                     ProgressView().controlSize(.small)
                 } else {
-                    Image(systemName: "arrow.up")
+                    Image(systemName: isReturn ? "return" : "arrow.up")
                         .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(enabled ? AnyShapeStyle(.black) : AnyShapeStyle(.tertiary))
+                        .foregroundStyle(!enabled ? AnyShapeStyle(.tertiary) : isReturn ? AnyShapeStyle(.primary) : AnyShapeStyle(.black))
                 }
             }
             .frame(width: 34, height: 34)
-            .background(enabled ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary), in: Circle())
+            // Return is quieter than a send: grey, like the toolbar's keys.
+            .background(enabled && !isReturn ? AnyShapeStyle(.tint) : AnyShapeStyle(.quaternary), in: Circle())
         }
         .disabled(!enabled)
         .keyboardShortcut(.return, modifiers: .command)
-        .accessibilityLabel("Send")
+        .accessibilityLabel(isReturn ? "Return" : "Send")
+        .accessibilityIdentifier("send-button")
         .sensoryFeedback(.impact(weight: .medium), trigger: sent)
         .animation(.snappy(duration: 0.15), value: enabled)
+        .animation(.snappy(duration: 0.15), value: isReturn)
     }
 }
 
