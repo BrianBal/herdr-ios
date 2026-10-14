@@ -31,19 +31,19 @@ struct HomeView: View {
                 }
             }
         }
-        // With more than one gateway, the title names the one shown and switches between them.
-        .navigationTitle(app.gateways.count > 1 ? app.activeGateway?.name ?? "herdr" : "herdr")
-        // Inline, the title shows a chevron; a large title hides that it's a menu.
-        .navigationBarTitleDisplayMode(app.gateways.count > 1 ? .inline : .automatic)
-        .toolbarTitleMenu {
-            if app.gateways.count > 1 {
-                ForEach(app.gateways) { g in
-                    Button { app.switchTo(g.id) } label: {
-                        if g.id == app.activeId { Label(g.name, systemImage: "checkmark") } else { Text(g.name) }
-                    }
-                }
+        .navigationTitle(isGrid ? app.activeGateway?.name ?? "herdr" : app.gateways.count > 1 ? app.activeGateway?.name ?? "herdr" : "herdr")
+        // On iPhone the title is the gateway pill; in the sidebar, with more than
+        // one gateway, an inline title menu (a large title hides that it's a menu).
+        .navigationBarTitleDisplayMode(isGrid || app.gateways.count > 1 ? .inline : .automatic)
+        // Even an empty title menu shows its chevron, so it's only there with something to pick.
+        .modifier(TitleMenu(enabled: isGrid || app.gateways.count > 1) {
+            gatewayMenuItems
+            if isGrid {
+                Divider()
+                Button { showSettings = true } label: { Label("Manage Gateways…", systemImage: "gearshape") }
             }
-        }
+        })
+        .modifier(LatencySubtitle(enabled: isGrid))
         .safeAreaInset(edge: .top, spacing: 0) { ConnectionBanner() }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -100,6 +100,18 @@ struct HomeView: View {
         }
     }
 
+    /// iPhone: cards and a grid of workspace tiles. The split view's sidebar keeps the list.
+    private var isGrid: Bool { sidebarSelection == nil }
+
+    @ViewBuilder
+    private var gatewayMenuItems: some View {
+        ForEach(app.gateways) { g in
+            Button { app.switchTo(g.id) } label: {
+                if g.id == app.activeId { Label(g.name, systemImage: "checkmark") } else { Text(g.name) }
+            }
+        }
+    }
+
     private func startRename(_ ws: Workspace) {
         renameText = ws.label
         renaming = ws
@@ -125,10 +137,65 @@ struct HomeView: View {
                 .listStyle(.sidebar)
                 .refreshable { await store.refresh() }
         } else {
-            List { sections(s) }
-                .listStyle(.insetGrouped)
+            ScrollView { grid(s) }
+                .background(Color(.systemBackground))
                 .refreshable { await store.refresh() }
         }
+    }
+
+    private func grid(_ s: SessionSnapshot) -> some View {
+        let attention = s.agents
+            .filter { $0.agentStatus == .blocked || $0.agentStatus == .done }
+            .sorted { ($0.agentStatus.priority, $0.workspaceId) < ($1.agentStatus.priority, $1.workspaceId) }
+        let working = s.agents.filter { $0.agentStatus == .working }.count
+        return VStack(alignment: .leading, spacing: 14) {
+            if !attention.isEmpty {
+                HStack(spacing: 8) {
+                    Circle().fill(attention[0].agentStatus.tint).frame(width: 8, height: 8)
+                    Text("Needs you")
+                }
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+                ForEach(attention) { agent in
+                    NavigationLink(value: Route.workspace(agent.workspaceId, pane: agent.paneId)) {
+                        AttentionCard(agent: agent, workspaceLabel: s.workspace(agent.workspaceId)?.label)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            HStack {
+                Text("Workspaces")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if working > 0 {
+                    Text("\(working) working")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(AgentStatus.working.tint)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(AgentStatus.working.tint.opacity(0.15), in: Capsule())
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.top, attention.isEmpty ? 0 : 12)
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 14) {
+                ForEach(s.sortedWorkspaces) { ws in
+                    NavigationLink(value: Route.workspace(ws.workspaceId, pane: nil)) {
+                        WorkspaceTile(workspace: ws, agents: s.agents(in: ws.workspaceId))
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button { startRename(ws) } label: { Label("Rename", systemImage: "pencil") }
+                        Button(role: .destructive) { closing = ws } label: { Label("Close Workspace", systemImage: "xmark") }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 24)
+        .animation(.default, value: attention.map(\.id))
     }
 
     @ViewBuilder
@@ -266,5 +333,157 @@ struct AgentRow: View {
                 .lineLimit(1)
             }
         }
+    }
+}
+
+/// Round trip to herdr under the title (iOS 26): green when snappy, yellow when slow.
+private struct LatencySubtitle: ViewModifier {
+    @Environment(HerdrStore.self) private var store
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *), enabled, store.isConnected, let latency = store.latency {
+            let ms = Int((latency / .milliseconds(1)).rounded())
+            content.navigationSubtitle(Text("\(ms)ms").foregroundStyle(ms < 150 ? Color.green : ms < 500 ? Color.yellow : Color.red))
+        } else {
+            content
+        }
+    }
+}
+
+private struct TitleMenu<Items: View>: ViewModifier {
+    let enabled: Bool
+    @ViewBuilder let items: () -> Items
+
+    func body(content: Content) -> some View {
+        if enabled { content.toolbarTitleMenu { items() } } else { content }
+    }
+}
+
+/// A glass panel, tinted and glowing in a status color (none for quiet ones).
+private struct GlassPanel: ViewModifier {
+    let tint: Color?
+    var cornerRadius: CGFloat = 26
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if #available(iOS 26.0, *) {
+            content
+                .glassEffect(tint.map { .regular.tint($0.opacity(0.28)) } ?? .regular, in: shape)
+                .shadow(color: (tint ?? .clear).opacity(0.3), radius: 16)
+        } else {
+            content
+                .background((tint ?? .gray).opacity(tint == nil ? 0.18 : 0.3), in: shape)
+                .background(.ultraThinMaterial, in: shape)
+                .overlay(shape.strokeBorder(.white.opacity(0.12)))
+                .shadow(color: (tint ?? .clear).opacity(0.35), radius: 16)
+        }
+    }
+}
+
+/// "Needs you": an agent that's done or waiting on you.
+struct AttentionCard: View {
+    let agent: Agent
+    let workspaceLabel: String?
+
+    var body: some View {
+        HStack(spacing: 14) {
+            StatusIcon(status: agent.agentStatus, size: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(agent.headline).font(.body.weight(.semibold)).lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(agent.kindLabel)
+                    if let workspaceLabel { Text("· \(workspaceLabel)") }
+                    Text("· \(agent.agentStatus.label)").foregroundStyle(agent.agentStatus.tint)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .contentShape(Rectangle())
+        .modifier(GlassPanel(tint: nil, cornerRadius: 24))
+    }
+}
+
+/// A workspace on the home grid, tinted by its busiest agent: yellow while
+/// one works, green when one is done or waiting on you. Quiet ones stay plain
+/// so the ones that matter stand out.
+struct WorkspaceTile: View {
+    let workspace: Workspace
+    let agents: [Agent]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                Text("\(workspace.number)")
+                    .font(.callout.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                Text(workspace.label)
+                    .font(.headline)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+            }
+            Text(counts).font(.caption).foregroundStyle(.secondary)
+            if workspace.focused {
+                Text("focused on Mac")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(.white.opacity(0.12), in: Capsule())
+            }
+            Spacer(minLength: 8)
+            if agents.isEmpty {
+                Label("shell", systemImage: "terminal")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(sortedAgents.prefix(3)) { agent in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        StatusIcon(status: agent.agentStatus, size: 12)
+                        Text(agent.kindLabel).font(.caption.weight(.semibold))
+                    }
+                    if agent.headline != agent.kindLabel, agent.headline != workspace.label {
+                        Text(agent.headline)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 160, alignment: .topLeading)
+        .contentShape(Rectangle())
+        .modifier(GlassPanel(tint: tint))
+    }
+
+    private var sortedAgents: [Agent] { agents.sorted { $0.agentStatus.priority < $1.agentStatus.priority } }
+
+    private var tint: Color? {
+        switch workspace.agentStatus {
+        case .working, .blocked, .done: workspace.agentStatus.tint
+        case .idle, .unknown: nil
+        }
+    }
+
+    private var counts: String {
+        let tabs = workspace.tabCount == 1 ? "1 tab" : "\(workspace.tabCount) tabs"
+        let panes = workspace.paneCount == 1 ? "1 pane" : "\(workspace.paneCount) panes"
+        return "\(tabs) · \(panes)"
     }
 }

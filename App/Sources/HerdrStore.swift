@@ -74,6 +74,7 @@ final class HerdrStore {
     /// Forget the last gateway's state (switching or removing gateways).
     func reset() {
         snapshot = nil
+        latency = nil
         info = nil
         endpoint = nil
     }
@@ -138,7 +139,9 @@ final class HerdrStore {
     }
 
     private func refresh(using c: GatewayClient) async throws {
+        let started = ContinuousClock.now
         let s = try await c.snapshot()
+        latency = ContinuousClock.now - started
         snapshot = s
         publishBoard(s)
         updateAgentStatusSubscription(c, panes: Set(s.panes.map(\.paneId)))
@@ -382,6 +385,8 @@ final class HerdrStore {
 
     /// Agents installed on the Mac that herdr can start (claude, codex, …).
     private(set) var agentKinds: [String] = []
+    /// How long the last snapshot took to come back: phone → gateway → herdr and back.
+    private(set) var latency: Duration?
 
     /// Starts an agent in a pane that's at its shell prompt. herdr wants a
     /// unique name: the workspace's name, then "-2", "-3"… if taken. A first

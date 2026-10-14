@@ -77,7 +77,7 @@ final class GatewaysTests: XCTestCase {
         XCTAssertTrue(second.waitForNonExistence(timeout: 5))
         XCTAssertEqual(rows.count, 1)
         app.buttons["Done"].tap()
-        XCTAssertTrue(title("herdr").waitForExistence(timeout: 5))
+        XCTAssertTrue(title(host).waitForExistence(timeout: 5))
     }
 
     @MainActor
