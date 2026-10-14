@@ -185,7 +185,7 @@ final class TerminalModel {
     private func rerender() async {
         let size = fontSize
         let columns = wrapColumns
-        let pane = paneColumns
+        let pane = drawnColumns
         let agent = agentPane
         segments = await Self.render(lines, size: size, columns: columns, pane: pane, agent: agent)
     }
@@ -193,8 +193,13 @@ final class TerminalModel {
     /// History doesn't change with live frames, only when loaded or re-laid out.
     private func rerenderHistory() async {
         history = historyLines.isEmpty ? [] : await Self.render(historyLines, size: fontSize, columns: wrapColumns,
-                                                                 pane: paneColumns, agent: agentPane,
+                                                                 pane: drawnColumns, agent: agentPane,
                                                                  reflow: !historyLogical)
+    }
+
+    /// The width the pane's program drew at, which can be less than herdr's layout says.
+    private var drawnColumns: Int? {
+        agentPane ? TerminalSegmenter.drawnColumns(lines, layout: paneColumns) : paneColumns
     }
 
     private static func render(_ lines: [StyledLine], size: CGFloat, columns: Int?, pane: Int?, agent: Bool,

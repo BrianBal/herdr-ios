@@ -257,6 +257,17 @@ public enum TerminalSegmenter {
 
     // MARK: Display
 
+    /// The width an agent actually drew at. herdr's layout gives the pane's
+    /// rect, but the terminal behind it can be narrower (sized for a smaller
+    /// client that attached); Claude's input box spans the full width, so its
+    /// rules give the real width away. Agent screens only: in a shell, a short
+    /// rule in some output says nothing about the width.
+    public static func drawnColumns(_ lines: [StyledLine], layout: Int?) -> Int? {
+        let rule = lines.filter(\.isHorizontalRule).map { $0.plainText.count }.max()
+        guard let rule, rule >= 10 else { return layout }
+        return min(layout ?? rule, rule)
+    }
+
     /// Prose the agent hard-wrapped at its pane width, rejoined into one line
     /// per paragraph so the phone can wrap it at its own width instead of
     /// wrapping the Mac's lines a second time. Lines that weren't wrapped

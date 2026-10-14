@@ -530,3 +530,40 @@ extension ScrollbackTests {
         #expect(ShellCompletions.apply("git", to: "gi", replacing: "gi") == "git ")
     }
 }
+
+@Suite struct DrawnWidthTests {
+    private func plain(_ rows: [String]) -> [StyledLine] {
+        rows.map { StyledLine(runs: [StyledRun(text: $0, style: TermStyle())]) }
+    }
+
+    /// A Claude pane whose terminal is 29 columns though herdr's layout says 79.
+    private var narrowScreen: [StyledLine] {
+        plain([
+            "  I can't tell from ECR or",
+            "  Docker who ran the deploy.",
+            "  The publish and deploy were",
+            "  probably done together",
+            "  with #61's merge, by",
+            "  whoever merged it.",
+            "",
+            String(repeating: "─", count: 29),
+            "❯ check prod invocations now",
+            String(repeating: "─", count: 29),
+        ])
+    }
+
+    @Test func readsWidthFromClaudesRules() {
+        #expect(TerminalSegmenter.drawnColumns(narrowScreen, layout: 79) == 29)
+        #expect(TerminalSegmenter.drawnColumns(narrowScreen, layout: 20) == 20)
+        #expect(TerminalSegmenter.drawnColumns(plain(["no rules here"]), layout: 79) == 79)
+        #expect(TerminalSegmenter.drawnColumns(plain(["-----"]), layout: 79) == 79)
+    }
+
+    @Test func narrowProseRejoins() {
+        let prose = Array(narrowScreen.prefix(6))
+        let joined = TerminalSegmenter.reflowed(prose, columns: 29).map(\.plainText)
+        #expect(joined == ["  I can't tell from ECR or Docker who ran the deploy. The publish and deploy were probably done together with #61's merge, by whoever merged it."])
+        // At the layout's width it looked unwrapped, which is what the phone showed.
+        #expect(TerminalSegmenter.reflowed(prose, columns: 79).count == 6)
+    }
+}
