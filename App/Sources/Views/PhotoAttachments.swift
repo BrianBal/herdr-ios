@@ -1,6 +1,7 @@
 import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// A photo waiting in the composer: a thumbnail to show and the JPEG to upload.
 struct PhotoAttachment: Identifiable {
@@ -146,5 +147,60 @@ struct CameraView: UIViewControllerRepresentable {
         }
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { onDone(nil) }
+    }
+}
+
+/// Shows up beside 📎 while the clipboard holds an image (a screenshot just
+/// copied, say) and attaches it in one tap. A PasteButton, so iOS doesn't ask
+/// "Allow Paste?" each time. Hidden again once that copy has been pasted.
+struct PasteImageButton: View {
+    @Binding var attachments: [PhotoAttachment]
+    var limit = 4
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var available = false
+    /// The clipboard's changeCount when it was last pasted from.
+    @State private var pastedCount: Int?
+
+    var body: some View {
+        // A stack, not a Group: an empty Group never appears, so it couldn't watch the clipboard.
+        ZStack {
+            if available {
+                PasteButton(payloadType: PastedImage.self) { images in
+                    Task { @MainActor in
+                        pastedCount = UIPasteboard.general.changeCount
+                        refresh()
+                        for image in images {
+                            let made = await Task.detached(priority: .userInitiated) { PhotoAttachment(data: image.data) }.value
+                            if let made, attachments.count < limit { attachments.append(made) }
+                        }
+                    }
+                }
+                .labelStyle(.iconOnly)
+                .buttonBorderShape(.circle)
+                .controlSize(.small)
+                .disabled(attachments.count >= limit)
+                .accessibilityIdentifier("paste-image")
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: available)
+        .onAppear(perform: refresh)
+        .onChange(of: scenePhase) { _, phase in if phase == .active { refresh() } }
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in refresh() }
+    }
+
+    /// hasImages only looks at the types on the clipboard, so it doesn't count as a paste.
+    private func refresh() {
+        let board = UIPasteboard.general
+        available = board.hasImages && board.changeCount != pastedCount
+    }
+}
+
+/// Any image on the clipboard, as its raw data (PNG for screenshots).
+struct PastedImage: Transferable {
+    let data: Data
+
+    static var transferRepresentation: some TransferRepresentation {
+        DataRepresentation(importedContentType: .image) { PastedImage(data: $0) }
     }
 }

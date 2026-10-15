@@ -52,6 +52,9 @@ struct ComposerBar: View {
                 if pane.hasAgent {
                     AttachPhotoButton(attachments: $attachments)
                         .disabled(sending)
+                    PasteImageButton(attachments: $attachments)
+                        .disabled(sending)
+                        .frame(height: 34)
                 }
                 field
             }

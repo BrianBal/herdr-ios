@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// Sends a photo to an agent: attach from the library, see the thumbnail,
 /// send with a message. Needs a workspace named "ios-photo-test" whose pane
@@ -45,6 +46,36 @@ final class PhotoAttachTests: XCTestCase {
         XCTAssertTrue(remove.waitForNonExistence(timeout: 30), "photo wasn't sent")
         XCTAssertFalse(app.alerts.firstMatch.exists, "send failed: \(app.alerts.firstMatch.label)")
         save(app, "photo-sent")
+    }
+
+    /// A copied image shows a paste button; tapping it attaches the image
+    /// without the "Allow Paste?" prompt, and the button goes away.
+    @MainActor
+    func testPasteImage() throws {
+        let link = try XCTUnwrap(ProcessInfo.processInfo.environment["HERDR_PAIR_LINK"])
+        // A plain red square on the shared clipboard.
+        UIPasteboard.general.image = UIGraphicsImageRenderer(size: CGSize(width: 200, height: 200)).image { ctx in
+            UIColor.systemRed.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 200, height: 200))
+        }
+        let app = XCUIApplication()
+        app.launchEnvironment["HERDR_PAIR_LINK"] = link
+        app.launch()
+        let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow"]
+        if allow.waitForExistence(timeout: 8) { allow.tap() }
+
+        let row = app.buttons.containing(NSPredicate(format: "label CONTAINS 'ios-photo-test'")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        row.tap()
+
+        let paste = app.buttons["paste-image"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 10), "no paste button with an image copied")
+        save(app, "paste-button")
+        paste.tap()
+        XCTAssertTrue(app.buttons["Remove photo"].waitForExistence(timeout: 10), "pasted image wasn't attached")
+        XCTAssertTrue(paste.waitForNonExistence(timeout: 5), "paste button stayed after pasting")
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+        save(app, "pasted")
     }
 
     @MainActor
