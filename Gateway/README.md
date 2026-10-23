@@ -62,7 +62,11 @@ Cancel with `{"method":"gw.unsubscribe","params":{"subscription":"s1"}}`.
 ← {"watch":"wt1","frame":{"seq":1,"pane_id":"w1:p1","text":"<ansi>","format":"ansi","source":"visible",...}}
 ← {"watch":"wt1","closed":true,"error":{...}}    // e.g. pane closed
 ```
-Stop with `{"method":"gw.unwatch_pane","params":{"watch":"wt1"}}`. Limits: 8 watches, 16 subscriptions and 64 in-flight requests per connection.
+Stop with `{"method":"gw.unwatch_pane","params":{"watch":"wt1"}}`.
+
+**Fit to the phone.** Add `"cols"` and `"rows"` to `gw.watch_pane` and the gateway holds the pane at that size while it's watched, like a smaller tmux client. It runs `herdr terminal session control --takeover`, so full-screen programs such as opencode redraw at the phone's width, and the Mac's split shows the smaller size meanwhile. Change the size with `{"method":"gw.fit_watch","params":{"watch":"wt1","cols":44,"rows":40}}`, or leave out cols/rows to give the pane back. Unwatching or disconnecting also gives it back.
+
+Limits: 8 watches, 16 subscriptions and 64 in-flight requests per connection.
 
 **Other.** `gw.info` returns the gateway version, the authenticated user and herdr's `ping` result, including `protocol`. `GET /healthz` is unauthenticated and returns `{ok, herdr, pid, gateway_version}`.
 

@@ -31,7 +31,7 @@ const notifier = new Notifier({
   log,
 });
 const uploads = new Uploads(join(paths.stateDir, "uploads"));
-const gateway = createGateway({ config, herdr, log, uploads, push: { devices, notifier, problem: apns.problem } });
+const gateway = createGateway({ config, herdr, log, uploads, herdrBin: paths.herdrBin, push: { devices, notifier, problem: apns.problem } });
 if (apns.problem) log(`push notifications off: ${apns.problem}`);
 notifier.start();
 

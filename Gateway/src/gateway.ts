@@ -9,6 +9,8 @@
 //     herdr closes produces {subscription: id, closed: true, reason?}.
 //   * gw.* methods are handled by the gateway (see handleGatewayMethod),
 //     including gw.push_* for push notification sign-up (see push.ts).
+//     gw.watch_pane with cols/rows (and gw.fit_watch later) also holds the
+//     pane at that size while it's watched (see fit.ts).
 // Gateway-originated pushes never carry an `id`.
 
 import type { Server, ServerWebSocket } from "bun";
@@ -19,6 +21,7 @@ import type { ApnsEnvironment, DeviceStore, Notifier } from "./push";
 import { claudeTranscript } from "./transcript";
 import { complete, looksRemote } from "./complete";
 import { UploadError, type Uploads } from "./uploads";
+import { fitSize, PaneFit } from "./fit";
 
 export const GATEWAY_VERSION = "0.1.0";
 const MAX_INFLIGHT = 64;
@@ -37,6 +40,8 @@ interface Watch {
   timer?: Timer;
   polling: boolean;
   stopped: boolean;
+  /** Holds the pane at the client's size while watched. */
+  fit?: PaneFit;
 }
 
 interface ClientState {
@@ -64,6 +69,8 @@ export interface GatewayOptions {
   push?: PushHooks;
   /** Where gw.upload saves photos; without it, uploads are refused. */
   uploads?: Uploads;
+  /** The herdr CLI, for holding panes at the phone's size; without it watches don't resize. */
+  herdrBin?: string;
   log?: (msg: string) => void;
 }
 
@@ -109,7 +116,7 @@ function inputTarget(method: string, params: any): string | null {
   return null;
 }
 
-export function createGateway({ config, herdr, push, uploads, log = () => {} }: GatewayOptions) {
+export function createGateway({ config, herdr, push, uploads, herdrBin, log = () => {} }: GatewayOptions) {
   const clients = new Set<WS>();
   const deny = new Set(config.deny_methods);
   const allowedUsers = new Set(config.allowed_users);
@@ -252,8 +259,21 @@ export function createGateway({ config, herdr, push, uploads, log = () => {} }: 
     if (!w) return false;
     w.stopped = true;
     if (w.timer) clearTimeout(w.timer);
+    w.fit?.close();
     ws.data.watches.delete(watchId);
     return true;
+  }
+
+  function setFit(w: Watch, cols: unknown, rows: unknown) {
+    const size = herdrBin ? fitSize(cols, rows) : null;
+    if (!size) {
+      w.fit?.close();
+      w.fit = undefined;
+    } else if (w.fit) {
+      w.fit.resize(size);
+    } else {
+      w.fit = new PaneFit(w.pane_id, size, { herdrBin: herdrBin!, socket: herdr.path, log });
+    }
   }
 
   /** Poll watches on this pane right away so typed input echoes quickly. */
@@ -302,9 +322,23 @@ export function createGateway({ config, herdr, push, uploads, log = () => {} }: 
           polling: false,
           stopped: false,
         };
+        setFit(w, params.cols, params.rows);
         st.watches.set(watchId, w);
         send(ws, { id, result: { type: "watch_started", watch: watchId } });
         pollWatch(ws, w, watchId);
+        return;
+      }
+      case "gw.fit_watch": {
+        // New size for a watched pane (rotation, font size); no cols/rows gives it back.
+        const w = st.watches.get(String(params?.watch));
+        if (!w) {
+          send(ws, errorMsg(id, "not_found", "no such watch"));
+          return;
+        }
+        setFit(w, params?.cols, params?.rows);
+        w.quietTicks = 0;
+        scheduleWatch(ws, w, String(params.watch), 150);
+        send(ws, { id, result: { type: "ok", fitted: !!w.fit } });
         return;
       }
       case "gw.unwatch_pane": {

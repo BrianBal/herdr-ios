@@ -123,14 +123,21 @@ final class TerminalModel {
     /// The pane's width on the Mac, used to re-join prose the agent wrapped.
     private var paneColumns: Int?
     private var agentPane = false
+    /// The size the gateway holds the pane at, if fitting it to this screen.
+    private var fit: PaneSize?
+    private var watchId: String?
+    private var client: GatewayClient?
 
     var isEmpty: Bool { segments.isEmpty }
 
     /// Runs until cancelled or the watch ends (socket drop, pane closed).
     func watch(_ paneId: String, client: GatewayClient) async {
         status = .loading
+        defer { watchId = nil }
         do {
-            let frames = try await client.watchPane(paneId)
+            let (id, frames) = try await client.watchPane(paneId, fit: fit)
+            watchId = id
+            self.client = client
             for try await frame in frames {
                 let parsed = await Task.detached(priority: .userInitiated) { ANSIParser.parse(frame.text) }.value
                 lines = parsed
@@ -170,6 +177,14 @@ final class TerminalModel {
         } catch {
             historyState = .failed(error.localizedDescription)
         }
+    }
+
+    /// Fits the pane to this screen (or gives it back with nil), like a smaller
+    /// tmux client: full-screen programs redraw at that size.
+    func setFit(_ size: PaneSize?) async {
+        guard size != fit else { return }
+        fit = size
+        if let watchId, let client { await client.fitWatch(watchId, to: size) }
     }
 
     func setLayout(fontSize size: CGFloat, wrapColumns columns: Int?, paneColumns pane: Int?, agentPane agent: Bool) async {

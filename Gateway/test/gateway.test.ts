@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_DENY_METHODS, type GatewayConfig } from "../src/config";
@@ -102,7 +102,12 @@ const notifier = new Notifier({
   activeTokens: () => gw.activeTokens(),
 });
 const uploads = new Uploads(join(dir, "uploads"));
-const gw = createGateway({ config, herdr, uploads, push: { devices, notifier } });
+// Fake herdr CLI for pane fitting: logs its args, the commands on stdin, then EOF.
+const fitLog = join(dir, "fit.log");
+const herdrBin = join(dir, "herdr");
+writeFileSync(herdrBin, `#!/bin/sh\necho "$*" >> "${fitLog}"\ncat >> "${fitLog}"\necho EOF >> "${fitLog}"\n`);
+chmodSync(herdrBin, 0o755);
+const gw = createGateway({ config, herdr, uploads, herdrBin, push: { devices, notifier } });
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: gw.fetch, websocket: gw.websocket });
 const wsUrl = `ws://127.0.0.1:${server.port}/ws`;
 
@@ -254,6 +259,26 @@ describe("pane watch", () => {
     paneText = "frame three";
     await Bun.sleep(150);
     expect(c.inbox.filter((m) => m.frame)).toHaveLength(0);
+    c.close();
+  });
+
+  test("holds the pane at the client's size while watched", async () => {
+    const fitLines = () => (existsSync(fitLog) ? readFileSync(fitLog, "utf8").trim().split("\n") : []);
+    const c = new Client();
+    await c.open();
+    c.send({ id: "w", method: "gw.watch_pane", params: { pane_id: "w1:p1", cols: 44, rows: 9000 } });
+    const { result } = await c.next((m) => m.id === "w");
+    c.send({ id: "f", method: "gw.fit_watch", params: { watch: result.watch, cols: 60, rows: 30 } });
+    expect((await c.next((m) => m.id === "f")).result).toMatchObject({ type: "ok", fitted: true });
+    c.send({ id: "u", method: "gw.unwatch_pane", params: { watch: result.watch } });
+    await c.next((m) => m.id === "u");
+    for (let i = 0; i < 40 && fitLines().at(-1) !== "EOF"; i++) await Bun.sleep(25);
+    expect(fitLines()).toEqual([
+      "terminal session control w1:p1 --takeover --cols 44 --rows 300", // rows clamped
+      JSON.stringify({ type: "terminal.resize", cols: 60, rows: 30 }),
+      JSON.stringify({ type: "terminal.release" }),
+      "EOF",
+    ]);
     c.close();
   });
 });

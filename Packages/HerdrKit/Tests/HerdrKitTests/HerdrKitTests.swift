@@ -162,7 +162,7 @@ import Testing
         #expect(!snap.workspaces.isEmpty)
 
         let pane = try #require(snap.panes.first)
-        let frames = try await client.watchPane(pane.paneId)
+        let (_, frames) = try await client.watchPane(pane.paneId)
         var it = frames.makeAsyncIterator()
         let first = try await it.next()
         #expect(first?.paneId == pane.paneId)

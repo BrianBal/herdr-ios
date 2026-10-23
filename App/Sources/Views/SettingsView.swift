@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("terminal.fontSize") private var fontSize = 11.0
     @AppStorage("terminal.wrap") private var wrap = true
+    @AppStorage("terminal.fit") private var fitScreen = true
     @State private var addingGateway = false
     @State private var removing: SavedGateway?
     @State private var testResult: String?
@@ -34,11 +35,17 @@ struct SettingsView: View {
                 } footer: {
                     Text("One-tap chips above the message field. Long-press a chip to edit or remove it.")
                 }
-                Section("Terminal") {
+                Section {
                     Stepper(value: $fontSize, in: 7...20, step: 1) {
                         LabeledContent("Font size", value: "\(Int(fontSize)) pt")
                     }
                     Toggle("Wrap long lines", isOn: $wrap)
+                    Toggle("Fit panes to this screen", isOn: $fitScreen)
+                        .disabled(!wrap)
+                } header: {
+                    Text("Terminal")
+                } footer: {
+                    Text("Shrinks the pane you're viewing to this screen, like a smaller tmux client, so full-screen programs such as opencode redraw to fit. The Mac shows it smaller until you leave the pane.")
                 }
             }
             .navigationTitle("Settings")

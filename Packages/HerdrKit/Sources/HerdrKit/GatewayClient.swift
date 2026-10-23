@@ -220,19 +220,37 @@ public actor GatewayClient {
     }
 
     /// Gateway-side polling of `pane.read`; yields a frame whenever the text changes.
+    /// With `fit`, the gateway also holds the pane at that size while it's watched.
     public func watchPane(
-        _ paneId: String, source: String = "visible", format: String = "ansi", intervalMs: Int = 100
-    ) async throws -> AsyncThrowingStream<PaneFrame, Error> {
+        _ paneId: String, source: String = "visible", format: String = "ansi", intervalMs: Int = 100,
+        fit: PaneSize? = nil
+    ) async throws -> (id: String, frames: AsyncThrowingStream<PaneFrame, Error>) {
         let (stream, continuation) = AsyncThrowingStream<PaneFrame, Error>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let r: WatchStarted = try await call(
-            "gw.watch_pane",
-            params: ["pane_id": .string(paneId), "source": .string(source), "format": .string(format),
-                     "interval_ms": .number(Double(intervalMs))])
+        var params: [String: JSONValue] = [
+            "pane_id": .string(paneId), "source": .string(source), "format": .string(format),
+            "interval_ms": .number(Double(intervalMs)),
+        ]
+        if let fit {
+            params["cols"] = .number(Double(fit.cols))
+            params["rows"] = .number(Double(fit.rows))
+        }
+        let r: WatchStarted = try await call("gw.watch_pane", params: .object(params))
         watches[r.watch] = continuation
         continuation.onTermination = { [weak self] _ in
             Task { await self?.unwatch(r.watch) }
         }
-        return stream
+        return (r.watch, stream)
+    }
+
+    /// Holds a watched pane at a new size, or gives it back to the Mac (`nil`).
+    /// Gateways from before pane fitting don't know this; it's a no-op there.
+    public func fitWatch(_ watchId: String, to size: PaneSize?) async {
+        var params: [String: JSONValue] = ["watch": .string(watchId)]
+        if let size {
+            params["cols"] = .number(Double(size.cols))
+            params["rows"] = .number(Double(size.rows))
+        }
+        try? await send("gw.fit_watch", params: .object(params), timeout: 5)
     }
 
     private func unwatch(_ watchId: String) async {
@@ -359,6 +377,16 @@ private struct SubscriptionMessage: Decodable {
 
 private struct WatchMessage: Decodable {
     let frame: PaneFrame?
+}
+
+/// A terminal size in cells.
+public struct PaneSize: Hashable, Sendable {
+    public var cols: Int
+    public var rows: Int
+    public init(cols: Int, rows: Int) {
+        self.cols = cols
+        self.rows = rows
+    }
 }
 
 private struct WatchStarted: Decodable, Sendable {

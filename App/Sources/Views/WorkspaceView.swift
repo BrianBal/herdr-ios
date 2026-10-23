@@ -14,6 +14,7 @@ struct WorkspaceView: View {
     @Binding var showAgents: Bool
     @AppStorage("terminal.fontSize") private var fontSize = 11.0
     @AppStorage("terminal.wrap") private var wrap = true
+    @AppStorage("terminal.fit") private var fitScreen = true
 
     var body: some View {
         if let s = store.snapshot, let ws = s.workspace(workspaceId) {
@@ -87,6 +88,8 @@ struct WorkspaceView: View {
                     Button { fontSize = min(20, fontSize + 1) } label: { Label("Larger text", systemImage: "textformat.size.larger") }
                     Button { fontSize = max(7, fontSize - 1) } label: { Label("Smaller text", systemImage: "textformat.size.smaller") }
                     Toggle(isOn: $wrap) { Label("Wrap long lines", systemImage: "text.word.spacing") }
+                    Toggle(isOn: $fitScreen) { Label("Fit panes to this screen", systemImage: "arrow.down.right.and.arrow.up.left") }
+                        .disabled(!wrap)
                 } label: {
                     Image(systemName: "textformat.size")
                 }
@@ -395,8 +398,10 @@ struct PaneTerminalView: View {
     @State private var model = TerminalModel()
     @AppStorage("terminal.fontSize") private var fontSize = 11.0
     @AppStorage("terminal.wrap") private var wrap = true
+    @AppStorage("terminal.fit") private var fitScreen = true
     @GestureState private var pinch: CGFloat = 1
     @State private var width: CGFloat = 0
+    @State private var height: CGFloat = 0
 
     static let gutterWidth: CGFloat = 28
 
@@ -406,10 +411,20 @@ struct PaneTerminalView: View {
         return max(10, Int((width - 16 - Self.gutterWidth) / (fontSize * 0.602)) - 2)
     }
 
+    /// The size to hold the pane at so its program draws for this screen
+    /// instead of the Mac's split. Only while wrapping: scrolling sideways is
+    /// for reading the Mac's layout as is.
+    private var fitSize: PaneSize? {
+        guard fitScreen, let cols = wrapColumns, height > 0 else { return nil }
+        let line = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular).lineHeight
+        return PaneSize(cols: cols, rows: max(5, Int((height - 12) / line)))
+    }
+
     private var agentPane: Bool { store.snapshot?.pane(paneId)?.hasAgent ?? false }
 
-    /// Width of this pane on the Mac, in cells.
+    /// Width of this pane in cells: the fitted width, else its split on the Mac.
     private var paneColumns: Int? {
+        if let fitSize { return fitSize.cols }
         guard let s = store.snapshot, let pane = s.pane(paneId) else { return nil }
         return s.layouts.first { $0.tabId == pane.tabId }?.panes.first { $0.paneId == paneId }?.rect.width
     }
@@ -466,11 +481,20 @@ struct PaneTerminalView: View {
                 .updating($pinch) { value, state, _ in state = value.magnification }
                 .onEnded { value in fontSize = min(20, max(7, (fontSize * value.magnification).rounded())) }
         )
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: {
+            width = $0.width
+            height = $0.height
+        }
         .task(id: WatchKey(generation: store.generation, paneId: paneId)) {
             guard let client = store.client else { return }
+            await model.setFit(fitSize)
             await model.setLayout(fontSize: fontSize, wrapColumns: wrapColumns, paneColumns: paneColumns, agentPane: agentPane)
             await model.watch(paneId, client: client)
+        }
+        // Settle first: the keyboard and a pinch pass through sizes on the way.
+        .task(id: fitSize) {
+            try? await Task.sleep(for: .milliseconds(250))
+            if !Task.isCancelled { await model.setFit(fitSize) }
         }
         .onChange(of: LayoutKey(fontSize: fontSize, columns: wrapColumns, paneColumns: paneColumns, agentPane: agentPane)) { _, key in
             Task {
