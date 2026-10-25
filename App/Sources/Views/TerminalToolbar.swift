@@ -34,6 +34,14 @@ struct TerminalToolbar: View {
     let paneId: String
     let mode: Mode
     @State private var showCtrlGrid = false
+    @State private var overflow = Overflow()
+
+    private struct Overflow: Equatable {
+        var leading = false
+        var trailing = false
+    }
+
+    private static let fadeWidth: CGFloat = 28
 
     private static let core = KeyGroup(id: "core", keys: [
         TermKey(id: "esc", label: "esc", keys: ["esc"], spoken: "Escape"),
@@ -99,12 +107,22 @@ struct TerminalToolbar: View {
             }
             .padding(.horizontal, 1)
         }
-        // Fade the trailing edge so it reads as "more keys this way" next to the send button.
-        .mask(
-            LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.9),
-                                   .init(color: .clear, location: 1)],
-                           startPoint: .leading, endPoint: .trailing)
-        )
+        .onScrollGeometryChange(for: Overflow.self) { geo in
+            Overflow(leading: geo.visibleRect.minX > 1, trailing: geo.visibleRect.maxX < geo.contentSize.width - 1)
+        } action: { _, new in
+            withAnimation(.easeOut(duration: 0.15)) { overflow = new }
+        }
+        // Fade an edge only while keys continue past it, so the last key on
+        // screen doesn't look disabled when there's nothing more to scroll to.
+        .mask {
+            HStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: overflow.leading ? Self.fadeWidth : 0)
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: overflow.trailing ? Self.fadeWidth : 0)
+            }
+        }
         .disabled(!store.isConnected)
         .animation(.snappy, value: mode)
     }

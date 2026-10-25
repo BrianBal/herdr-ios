@@ -251,11 +251,15 @@ struct HomeView: View {
 struct AgentsButton: View {
     @Environment(HerdrStore.self) private var store
     @Binding var showAgents: Bool
+    /// Tap target for the button, when it isn't in a navigation bar.
+    var hit: CGSize? = nil
 
     var body: some View {
         let waiting = store.snapshot?.agents.filter { $0.agentStatus == .blocked }.count ?? 0
         Button { showAgents = true } label: {
             Image(systemName: "person.2.wave.2")
+                .frame(width: hit?.width, height: hit?.height)
+                .contentShape(.rect)
                 .overlay(alignment: .topTrailing) {
                     if waiting > 0 {
                         Text("\(waiting)")

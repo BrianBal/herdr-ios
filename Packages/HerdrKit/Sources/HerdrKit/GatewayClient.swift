@@ -40,6 +40,7 @@ public actor GatewayClient {
     private var pending: [String: CheckedContinuation<Data, Error>] = [:]
     private var subscriptions: [String: AsyncThrowingStream<HerdrEvent, Error>.Continuation] = [:]
     private var watches: [String: AsyncThrowingStream<PaneFrame, Error>.Continuation] = [:]
+    private var transcripts: [String: AsyncStream<TranscriptUpdate>.Continuation] = [:]
     private var closeWaiters: [CheckedContinuation<String?, Never>] = []
     private var keepalive: Task<Void, Never>?
 
@@ -221,11 +222,16 @@ public actor GatewayClient {
 
     /// Gateway-side polling of `pane.read`; yields a frame whenever the text changes.
     /// With `fit`, the gateway also holds the pane at that size while it's watched.
+    /// With `transcriptLines`, a Claude pane's watch also follows its session
+    /// file: `transcript` yields its last blocks, then each one Claude adds. It's
+    /// nil when the gateway can't (older gateways).
     public func watchPane(
         _ paneId: String, source: String = "visible", format: String = "ansi", intervalMs: Int = 100,
-        fit: PaneSize? = nil
-    ) async throws -> (id: String, frames: AsyncThrowingStream<PaneFrame, Error>) {
+        fit: PaneSize? = nil, transcriptLines: Int? = nil
+    ) async throws -> (id: String, frames: AsyncThrowingStream<PaneFrame, Error>, transcript: AsyncStream<TranscriptUpdate>?) {
         let (stream, continuation) = AsyncThrowingStream<PaneFrame, Error>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        // Every update counts, unlike frames where only the newest matters.
+        let (updates, updatesContinuation) = AsyncStream<TranscriptUpdate>.makeStream()
         var params: [String: JSONValue] = [
             "pane_id": .string(paneId), "source": .string(source), "format": .string(format),
             "interval_ms": .number(Double(intervalMs)),
@@ -234,12 +240,22 @@ public actor GatewayClient {
             params["cols"] = .number(Double(fit.cols))
             params["rows"] = .number(Double(fit.rows))
         }
+        if let transcriptLines { params["transcript_lines"] = .number(Double(transcriptLines)) }
         let r: WatchStarted = try await call("gw.watch_pane", params: .object(params))
         watches[r.watch] = continuation
+        let following = r.transcript == true
+        if following { transcripts[r.watch] = updatesContinuation } else { updatesContinuation.finish() }
         continuation.onTermination = { [weak self] _ in
             Task { await self?.unwatch(r.watch) }
         }
-        return (r.watch, stream)
+        return (r.watch, stream, following ? updates : nil)
+    }
+
+    /// Older blocks of a watched Claude pane's session, before the block `before`.
+    public func transcriptBefore(watch: String, before: String, lines: Int) async throws -> TranscriptUpdate {
+        try await call("gw.transcript_before", params: [
+            "watch": .string(watch), "before": .string(before), "lines": .number(Double(lines)),
+        ], timeout: 30)
     }
 
     /// Holds a watched pane at a new size, or gives it back to the Mac (`nil`).
@@ -254,6 +270,7 @@ public actor GatewayClient {
     }
 
     private func unwatch(_ watchId: String) async {
+        transcripts.removeValue(forKey: watchId)?.finish()
         guard watches.removeValue(forKey: watchId) != nil else { return }
         try? await send("gw.unwatch_pane", params: ["watch": .string(watchId)], timeout: 5)
     }
@@ -290,8 +307,10 @@ public actor GatewayClient {
             if header.closed == true {
                 let err = header.error.map { GatewayError.server(code: $0.code, message: $0.message) }
                 watches.removeValue(forKey: watch)?.finish(throwing: err)
-            } else if let msg = try? Self.modelDecoder.decode(WatchMessage.self, from: data), let frame = msg.frame {
-                watches[watch]?.yield(frame)
+                transcripts.removeValue(forKey: watch)?.finish()
+            } else if let msg = try? Self.modelDecoder.decode(WatchMessage.self, from: data) {
+                if let frame = msg.frame { watches[watch]?.yield(frame) }
+                if let update = msg.transcript { transcripts[watch]?.yield(update) }
             }
         }
     }
@@ -325,6 +344,8 @@ public actor GatewayClient {
         subscriptions.removeAll()
         for (_, c) in watches { c.finish(throwing: err) }
         watches.removeAll()
+        for (_, c) in transcripts { c.finish() }
+        transcripts.removeAll()
         for w in closeWaiters { w.resume(returning: reason) }
         closeWaiters.removeAll()
     }
@@ -377,6 +398,7 @@ private struct SubscriptionMessage: Decodable {
 
 private struct WatchMessage: Decodable {
     let frame: PaneFrame?
+    let transcript: TranscriptUpdate?
 }
 
 /// A terminal size in cells.
@@ -391,6 +413,8 @@ public struct PaneSize: Hashable, Sendable {
 
 private struct WatchStarted: Decodable, Sendable {
     let watch: String
+    /// Following the pane's Claude session (gateways that can).
+    let transcript: Bool?
 }
 
 private struct WorkspaceCreatedResult: Decodable, Sendable {

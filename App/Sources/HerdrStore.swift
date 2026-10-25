@@ -54,6 +54,22 @@ final class HerdrStore {
 
     var isConnected: Bool { phase == .connected }
 
+    /// Each pane's terminal (screen, history, transcript), most recently
+    /// opened last; kept across swipes, folds and reconnects.
+    @ObservationIgnored private var terminals: [String: TerminalModel] = [:]
+    @ObservationIgnored private var terminalOrder: [String] = []
+    static let keptTerminals = 8
+
+    func terminal(for paneId: String) -> TerminalModel {
+        terminalOrder.removeAll { $0 == paneId }
+        terminalOrder.append(paneId)
+        if let model = terminals[paneId] { return model }
+        let model = TerminalModel()
+        terminals[paneId] = model
+        while terminalOrder.count > Self.keptTerminals { terminals[terminalOrder.removeFirst()] = nil }
+        return model
+    }
+
     // MARK: Lifecycle
 
     func start(_ endpoint: GatewayEndpoint) {
@@ -73,6 +89,9 @@ final class HerdrStore {
 
     /// Forget the last gateway's state (switching or removing gateways).
     func reset() {
+        // Pane ids repeat across machines (both have a w1:p1).
+        terminals = [:]
+        terminalOrder = []
         snapshot = nil
         latency = nil
         info = nil

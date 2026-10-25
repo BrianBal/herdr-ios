@@ -27,6 +27,8 @@ struct RootView: View {
     @State private var route: Route?
     @State private var selectedPaneId: String?
     @State private var showAgents = false
+    @State private var columns = NavigationSplitViewVisibility.automatic
+    @State private var landscape = false
 
     var body: some View {
         Group {
@@ -43,7 +45,12 @@ struct RootView: View {
             // Ask for notifications the first time a gateway is actually reachable.
             if store.isConnected { await app.push.requestAuthorizationIfFirstTime() }
         }
-        .onChange(of: route) { _, route in selectedPaneId = route?.paneId }
+        .onChange(of: route) { _, route in
+            selectedPaneId = route?.paneId
+            // Picking a workspace in portrait slides the sidebar away; say so, so
+            // the Workspaces button's next tap opens it rather than "closing" it.
+            if route != nil, sizeClass == .regular, !landscape, columns != .detailOnly { columns = .detailOnly }
+        }
         // Workspace ids repeat across machines (both have a w1), so start over.
         .onChange(of: app.activeId) { route = nil }
         .onChange(of: store.snapshot?.workspaces.map(\.workspaceId)) { _, ids in
@@ -86,7 +93,7 @@ struct RootView: View {
     }
 
     private var regular: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columns) {
             HomeView(showAgents: $showAgents, sidebarSelection: $route, open: { route = $0 })
                 .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 360)
         } detail: {
@@ -94,6 +101,11 @@ struct RootView: View {
                 if let route {
                     WorkspaceView(workspaceId: route.workspaceId, selectedPaneId: $selectedPaneId, showAgents: $showAgents)
                         .id(route.workspaceId)
+                        .environment(\.toggleSidebar) {
+                            // .automatic shows the sidebar beside the detail in landscape only.
+                            let shown = columns == .automatic ? landscape : columns != .detailOnly
+                            withAnimation { columns = shown ? .detailOnly : .all }
+                        }
                 } else {
                     ContentUnavailableView("Pick a workspace", systemImage: "sidebar.left",
                                            description: Text("Or an agent that needs you."))
@@ -102,7 +114,18 @@ struct RootView: View {
         }
         // Terminals need the width: in portrait the sidebar slides over instead of squeezing them.
         .navigationSplitViewStyle(.prominentDetail)
+        .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { landscape = $0 }
+        // The unfolded Duo in portrait: the status bar is a band across the top,
+        // lines lost over a terminal. In landscape it sits in the side column.
+        // (Set here: the detail column's own preference doesn't reach the window.)
+        .statusBarHidden(UIDevice.current.userInterfaceIdiom == .phone && route != nil && !landscape)
     }
+}
+
+extension EnvironmentValues {
+    /// Shows or hides the workspace sidebar, for views that hide the
+    /// navigation bar its own button lives in.
+    @Entry var toggleSidebar: (() -> Void)? = nil
 }
 
 private struct PendingOpen: Equatable {

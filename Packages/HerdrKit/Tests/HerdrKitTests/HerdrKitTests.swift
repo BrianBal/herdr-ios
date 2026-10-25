@@ -162,7 +162,7 @@ import Testing
         #expect(!snap.workspaces.isEmpty)
 
         let pane = try #require(snap.panes.first)
-        let (_, frames) = try await client.watchPane(pane.paneId)
+        let (_, frames, _) = try await client.watchPane(pane.paneId)
         var it = frames.makeAsyncIterator()
         let first = try await it.next()
         #expect(first?.paneId == pane.paneId)
@@ -565,5 +565,51 @@ extension ScrollbackTests {
         #expect(joined == ["  I can't tell from ECR or Docker who ran the deploy. The publish and deploy were probably done together with #61's merge, by whoever merged it."])
         // At the layout's width it looked unwrapped, which is what the phone showed.
         #expect(TerminalSegmenter.reflowed(prose, columns: 79).count == 6)
+    }
+}
+
+@Suite struct TranscriptJoinTests {
+    static let lines = ScrollbackTests.lines
+
+    @Test func screenTakesOverAtItsFirstMessageInTheTranscript() {
+        let blocks = [
+            "❯ earlier question",
+            "⏺ The first answer is a long paragraph that the screen wraps over several rows of text.",
+            "⏺ Bash(ls)",
+            "⏺ Second answer, also long enough to wrap on a phone.",
+        ]
+        let screen = Self.lines([
+            "  over several rows of text.", // tail of block 1: history has it whole
+            "",
+            "⏺ Bash(ls)", // tool calls repeat, so this doesn't anchor
+            "  ⎿  a b c",
+            "",
+            "● Second answer, also long", // Linux draws ● instead of ⏺
+            "  enough to wrap on a phone.",
+            "",
+            "✻ Thinking…",
+            "────────────────",
+            "❯ earlier question", // the input box, with a draft that repeats a prompt
+            "────────────────",
+        ])
+        #expect(TranscriptJoin.cut(firstLines: blocks, screen: screen) == .init(block: 3, line: 5))
+    }
+
+    @Test func messagesNotWrittenYetDontMatch() {
+        let blocks = ["❯ fix the charts please", "⏺ Looking at the chart code now."]
+        let screen = Self.lines([
+            "❯ fix the charts please",
+            "",
+            "⏺ Looking at the chart code",
+            "  now.",
+            "",
+            "⏺ Found it: the axis is inverted.", // not in the transcript yet
+        ])
+        #expect(TranscriptJoin.cut(firstLines: blocks, screen: screen) == .init(block: 0, line: 0))
+    }
+
+    @Test func nothingInCommon() {
+        let screen = Self.lines(["  ⎿  line 1", "     line 2"])
+        #expect(TranscriptJoin.cut(firstLines: ["⏺ Something else entirely."], screen: screen) == nil)
     }
 }

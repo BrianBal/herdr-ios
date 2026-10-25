@@ -1,13 +1,15 @@
 import HerdrKit
 import SwiftUI
 
-/// One workspace. Compact width: every split in every tab is a page in one
-/// continuous pager; tab chips and the split map jump around it. Regular width:
-/// the current tab's splits side by side ([PaneGrid]). Either way the
-/// composer/toolbar act on the selected split.
+/// One workspace. On phones (the unfolded Duo included): every split in every
+/// tab is a page in one continuous pager; tab chips and the split map jump
+/// around it. iPad: the current tab's splits side by side ([PaneGrid]). Either
+/// way the composer/toolbar act on the selected split.
 struct WorkspaceView: View {
     @Environment(HerdrStore.self) private var store
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.dismiss) private var dismiss
     let workspaceId: String
     /// Owned by RootView so it survives fold/unfold layout switches.
     @Binding var selectedPaneId: String?
@@ -15,6 +17,18 @@ struct WorkspaceView: View {
     @AppStorage("terminal.fontSize") private var fontSize = 11.0
     @AppStorage("terminal.wrap") private var wrap = true
     @AppStorage("terminal.fit") private var fitScreen = true
+    @Environment(\.toggleSidebar) private var toggleSidebar
+    /// Width of the column the unfolded Duo keeps beside the screen in
+    /// landscape for the clock and status icons; 0 elsewhere.
+    @State private var sideColumn: CGFloat = 0
+
+    private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+
+    /// The unfolded Duo, and any phone in landscape: no navigation bar, the
+    /// height goes to the terminal. Its buttons move to the side column in
+    /// landscape, or into the split header in portrait.
+    private var chromeless: Bool { isPhone && (sizeClass == .regular || verticalSizeClass == .compact) }
+    private var usesSideRail: Bool { chromeless && sideColumn >= 44 }
 
     var body: some View {
         if let s = store.snapshot, let ws = s.workspace(workspaceId) {
@@ -42,7 +56,7 @@ struct WorkspaceView: View {
                     withAnimation { selectedPaneId = Self.entryPane(of: tabId, in: s)?.paneId }
                 }
             }
-            if sizeClass == .regular {
+            if sizeClass == .regular && !isPhone {
                 PaneGrid(panes: tabPanes, layout: layout, selection: current?.paneId) { paneId in
                     selectedPaneId = paneId
                 }
@@ -51,8 +65,13 @@ struct WorkspaceView: View {
                     PaneHeader(pane: current,
                                index: tabPanes.firstIndex(of: current) ?? 0,
                                count: tabPanes.count,
-                               layout: layout) { paneId in
+                               layout: layout,
+                               // Status bar hidden (Duo portrait): iOS still keeps the top
+                               // ~21pt for itself and taps there don't arrive, so start lower.
+                               topInset: chromeless && !usesSideRail && verticalSizeClass != .compact ? 10 : 0) { paneId in
                         withAnimation { selectedPaneId = paneId }
+                    } actions: {
+                        if chromeless && !usesSideRail { workspaceButtons(current, ws, hit: CGSize(width: 44, height: 36)) }
                     }
                 }
                 TabView(selection: $selectedPaneId) {
@@ -62,7 +81,8 @@ struct WorkspaceView: View {
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
-                .background(TerminalRenderer.background)
+                // Under the Duo's side column too, so the rail sits on the terminal's color.
+                .background(TerminalRenderer.background.ignoresSafeArea(.container, edges: .horizontal))
             }
         }
         .background {
@@ -75,26 +95,29 @@ struct WorkspaceView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let current { ComposerBar(pane: current) }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.trailing } action: { sideColumn = $0 }
+        .overlay {
+            if usesSideRail {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    SideRail {
+                        if let current { workspaceButtons(current, ws, hit: CGSize(width: 50, height: 44)) }
+                    }
+                    .frame(width: sideColumn)
+                }
+                .ignoresSafeArea(.container, edges: .trailing)
+            }
+        }
         .navigationTitle(ws.label)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(chromeless ? .hidden : .automatic, for: .navigationBar)
         .toolbar {
             if let current {
                 ToolbarItem(placement: .topBarTrailing) {
                     PaneMenu(pane: current, workspaceLabel: ws.label, selectedPaneId: $selectedPaneId)
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button { fontSize = min(20, fontSize + 1) } label: { Label("Larger text", systemImage: "textformat.size.larger") }
-                    Button { fontSize = max(7, fontSize - 1) } label: { Label("Smaller text", systemImage: "textformat.size.smaller") }
-                    Toggle(isOn: $wrap) { Label("Wrap long lines", systemImage: "text.word.spacing") }
-                    Toggle(isOn: $fitScreen) { Label("Fit panes to this screen", systemImage: "arrow.down.right.and.arrow.up.left") }
-                        .disabled(!wrap)
-                } label: {
-                    Image(systemName: "textformat.size")
-                }
-                .accessibilityLabel("Text options")
-            }
+            ToolbarItem(placement: .topBarTrailing) { textMenu() }
             if sizeClass != .regular {
                 ToolbarItem(placement: .topBarTrailing) { AgentsButton(showAgents: $showAgents) }
             }
@@ -114,11 +137,66 @@ struct WorkspaceView: View {
         }
     }
 
+    /// The navigation bar's buttons, for when the workspace goes without one:
+    /// the sidebar toggle (split view) or Back (navigation stack) first. Each
+    /// gets a full-size tap target (`hit`), not just its glyph: in the rail the
+    /// whole capsule looks tappable.
+    @ViewBuilder
+    private func workspaceButtons(_ current: Pane, _ ws: Workspace, hit: CGSize) -> some View {
+        if let toggleSidebar {
+            Button(action: toggleSidebar) {
+                Image(systemName: "sidebar.left")
+                    .frame(width: hit.width, height: hit.height)
+                    .contentShape(.rect)
+            }
+            .accessibilityLabel("Workspaces")
+        } else {
+            Button { dismiss() } label: {
+                Image(systemName: "chevron.backward")
+                    .frame(width: hit.width, height: hit.height)
+                    .contentShape(.rect)
+            }
+            .accessibilityLabel("Back")
+        }
+        PaneMenu(pane: current, workspaceLabel: ws.label, selectedPaneId: $selectedPaneId, hit: hit)
+        textMenu(hit: hit)
+        if sizeClass != .regular { AgentsButton(showAgents: $showAgents, hit: hit) }
+    }
+
+    private func textMenu(hit: CGSize? = nil) -> some View {
+        Menu {
+            Button { fontSize = min(20, fontSize + 1) } label: { Label("Larger text", systemImage: "textformat.size.larger") }
+            Button { fontSize = max(7, fontSize - 1) } label: { Label("Smaller text", systemImage: "textformat.size.smaller") }
+            Toggle(isOn: $wrap) { Label("Wrap long lines", systemImage: "text.word.spacing") }
+            Toggle(isOn: $fitScreen) { Label("Fit panes to this screen", systemImage: "arrow.down.right.and.arrow.up.left") }
+                .disabled(!wrap)
+        } label: {
+            Image(systemName: "textformat.size")
+                .frame(width: hit?.width, height: hit?.height)
+                .contentShape(.rect)
+        }
+        .accessibilityLabel("Text options")
+    }
+
     /// The split to show when entering a tab: herdr's focused one, else the first.
     private static func entryPane(of tabId: String, in s: SessionSnapshot) -> Pane? {
         let panes = s.panes(in: tabId)
         let focusedId = s.layouts.first { $0.tabId == tabId }?.focusedPaneId
         return panes.first { $0.paneId == focusedId } ?? panes.first
+    }
+}
+
+/// The workspace's buttons stacked in the unfolded Duo's side column, in
+/// place of a navigation bar.
+private struct SideRail<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(spacing: 4) { content }
+            .font(.title3)
+            .padding(.vertical, 8)
+            .frame(width: 50)
+            .glassEffect(.regular.interactive(), in: Capsule())
     }
 }
 
@@ -164,12 +242,15 @@ private struct TabChips: View {
     }
 }
 
-private struct PaneHeader: View {
+private struct PaneHeader<Actions: View>: View {
     let pane: Pane
     let index: Int
     let count: Int
     let layout: PaneLayout?
+    var topInset: CGFloat = 0
     let onSelect: (String) -> Void
+    /// Buttons at the trailing end, when there's no navigation bar for them.
+    @ViewBuilder let actions: Actions
 
     var body: some View {
         HStack(spacing: 10) {
@@ -191,9 +272,12 @@ private struct PaneHeader: View {
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Split \(index + 1) of \(count)")
             }
+            HStack(spacing: 0) { actions }
+                .font(.body)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+        .padding(.top, topInset)
         .background(.bar)
     }
 
@@ -209,7 +293,8 @@ private func abbreviate(_ path: String) -> String {
 /// Regular width (iPad, iPhone Duo unfolded): the current tab's splits side by
 /// side, arranged the way herdr arranges them on the Mac. When that would leave
 /// a split too small to read, shows two at a time in a pager instead, which also
-/// keeps a split from straddling the Duo's fold. Tap a split to select it.
+/// keeps a split from straddling the Duo's fold. In portrait the pager shows one
+/// at a time. Tap a split to select it.
 private struct PaneGrid: View {
     let panes: [Pane]
     let layout: PaneLayout?
@@ -222,19 +307,28 @@ private struct PaneGrid: View {
 
     var body: some View {
         GeometryReader { geo in
-            if let frames = frames(in: geo.size) {
-                ZStack(alignment: .topLeading) {
-                    ForEach(panes) { pane in
-                        if let f = frames[pane.paneId] {
-                            tile(pane, highlight: panes.count > 1, position: nil)
-                                .frame(width: f.width, height: f.height)
-                                .offset(x: f.minX, y: f.minY)
+            // The unfolded Duo keeps the status bar and toolbar in a column at the
+            // trailing edge. Splits that reach it run underneath, text kept clear.
+            let trailing = geo.safeAreaInsets.trailing
+            // Portrait: one split at a time, full width.
+            let portrait = geo.size.height > geo.size.width
+            Group {
+                if !portrait, let frames = frames(in: geo.size) {
+                    ZStack(alignment: .topLeading) {
+                        ForEach(panes) { pane in
+                            if let f = frames[pane.paneId] {
+                                let under = f.maxX >= geo.size.width - 0.5 ? trailing : 0
+                                tile(pane, highlight: panes.count > 1, position: nil, trailingInset: under)
+                                    .frame(width: f.width + under, height: f.height)
+                                    .offset(x: f.minX, y: f.minY)
+                            }
                         }
                     }
+                } else {
+                    pager(perPage: !portrait && geo.size.width >= 2 * Self.minTile.width ? 2 : 1, trailingInset: trailing)
                 }
-            } else {
-                pager(perPage: geo.size.width >= 2 * Self.minTile.width ? 2 : 1)
             }
+            .ignoresSafeArea(.container, edges: .trailing)
         }
         .background(Color(white: 0.3))
     }
@@ -261,7 +355,7 @@ private struct PaneGrid: View {
         return panes.allSatisfy { frames[$0.paneId] != nil } ? frames : nil
     }
 
-    private func pager(perPage: Int) -> some View {
+    private func pager(perPage: Int, trailingInset: CGFloat) -> some View {
         let pages = stride(from: 0, to: panes.count, by: perPage).map { Array(panes[$0..<min($0 + perPage, panes.count)]) }
         let pageOfSelection = panes.firstIndex { $0.paneId == selection }.map { $0 / perPage } ?? 0
         return TabView(selection: $page) {
@@ -269,7 +363,8 @@ private struct PaneGrid: View {
                 HStack(spacing: Self.gap) {
                     ForEach(pages[i]) { pane in
                         tile(pane, highlight: perPage > 1,
-                             position: pages.count > 1 ? "\(panes.firstIndex(of: pane).map { $0 + 1 } ?? 0)/\(panes.count)" : nil)
+                             position: pages.count > 1 ? "\(panes.firstIndex(of: pane).map { $0 + 1 } ?? 0)/\(panes.count)" : nil,
+                             trailingInset: pane == pages[i].last ? trailingInset : 0)
                     }
                 }
                 .tag(i)
@@ -286,12 +381,14 @@ private struct PaneGrid: View {
 
     /// `highlight`: more than one split is on screen, so mark the selected one.
     /// `position`: "2/5" when the pager hides some splits.
-    private func tile(_ pane: Pane, highlight: Bool, position: String?) -> some View {
+    /// `trailingInset`: width of the tile under the trailing column, kept free of text.
+    private func tile(_ pane: Pane, highlight: Bool, position: String?, trailingInset: CGFloat) -> some View {
         let selected = pane.paneId == selection && highlight
         return VStack(spacing: 0) {
             TileHeader(pane: pane, selected: selected, position: position)
             PaneTerminalView(paneId: pane.paneId)
         }
+        .safeAreaPadding(.trailing, trailingInset)
         .overlay {
             Rectangle().strokeBorder(Color.accentColor.opacity(selected ? 0.8 : 0), lineWidth: 2)
                 .allowsHitTesting(false)
@@ -395,13 +492,26 @@ private struct SplitMap: View {
 struct PaneTerminalView: View {
     @Environment(HerdrStore.self) private var store
     let paneId: String
-    @State private var model = TerminalModel()
     @AppStorage("terminal.fontSize") private var fontSize = 11.0
     @AppStorage("terminal.wrap") private var wrap = true
     @AppStorage("terminal.fit") private var fitScreen = true
     @GestureState private var pinch: CGFloat = 1
     @State private var width: CGFloat = 0
     @State private var height: CGFloat = 0
+    @State private var scroll = ScrollPosition(edge: .bottom)
+    @State private var spot = ScrollSpot()
+    /// Height of the header, earlier output and Live divider above the live screen.
+    @State private var historyHeight: CGFloat = 0
+    /// While earlier output loads: where the viewport's top sits relative to
+    /// the start of the live screen, so rows arriving above don't move you.
+    @State private var heldTop: CGFloat?
+    /// Within a screen of the top, where earlier output loads by itself.
+    @State private var nearTop = NearTop()
+    @State private var scrolledByHand = false
+
+    /// Kept by the store, so history survives swiping away and back.
+    private var model: TerminalModel { store.terminal(for: paneId) }
+    private var agent: String? { store.snapshot?.pane(paneId)?.agent }
 
     static let gutterWidth: CGFloat = 28
 
@@ -435,14 +545,19 @@ struct PaneTerminalView: View {
             if model.status == .loading && model.isEmpty {
                 ProgressView().tint(TerminalRenderer.foreground)
             } else {
-                ScrollViewReader { proxy in
                 ScrollView(wrap ? .vertical : [.vertical, .horizontal]) {
                     VStack(alignment: .leading, spacing: 0) {
-                        HistoryHeader(state: model.historyState) { Task { await loadEarlier(proxy) } }
-                        ForEach(model.history) { segment in
-                            SegmentView(segment: segment, wrap: wrap)
+                        VStack(alignment: .leading, spacing: 0) {
+                            HistoryHeader(state: model.historyState) { Task { await loadEarlier() } }
+                            ForEach(model.history) { segment in
+                                SegmentView(segment: segment, wrap: wrap)
+                            }
+                            if !model.history.isEmpty { LiveDivider(joined: model.historyJoined) }
                         }
-                        if !model.history.isEmpty { LiveDivider().id(Self.liveAnchor) }
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                            historyHeight = height
+                            holdPlace()
+                        }
                         ForEach(model.segments) { segment in
                             SegmentView(segment: segment, wrap: wrap)
                         }
@@ -454,6 +569,30 @@ struct PaneTerminalView: View {
                     .scaleEffect(pinch, anchor: .bottomLeading)
                 }
                 .defaultScrollAnchor(.bottom)
+                .scrollPosition($scroll)
+                .onScrollGeometryChange(for: ScrollSpot.self) { geo in
+                    ScrollSpot(top: geo.contentOffset.y + geo.contentInsets.top, inset: geo.contentInsets.top)
+                } action: { _, spot in
+                    self.spot = spot
+                    holdPlace()
+                }
+                // Earlier output loads as you near the top, no button needed. Also
+                // when the pane's screen is shorter than this one (a short split on
+                // the Mac): the rest fills with earlier output instead of blank space.
+                .onScrollGeometryChange(for: NearTop.self) { geo in
+                    NearTop(near: geo.contentOffset.y + geo.contentInsets.top < geo.containerSize.height,
+                            short: geo.contentSize.height + geo.contentInsets.top + geo.contentInsets.bottom < geo.containerSize.height)
+                } action: { _, value in
+                    nearTop = value
+                    loadNearTop()
+                }
+                // Scrolling yourself while earlier output loads takes over from the hold.
+                .onScrollPhaseChange { _, phase in
+                    if phase == .interacting {
+                        heldTop = nil
+                        scrolledByHand = true
+                    }
+                }
                 .scrollIndicators(.visible)
                 // Reading the output puts the keyboard away: drag down into it (as in
                 // Messages) or tap the output. Links and buttons keep their taps, and
@@ -462,8 +601,7 @@ struct PaneTerminalView: View {
                 .onTapGesture { dismissKeyboard() }
                 .accessibilityIdentifier("pane-output")
                 // Pull down at the top for earlier output.
-                .refreshable { await loadEarlier(proxy) }
-                }
+                .refreshable { await loadEarlier() }
             }
         }
         .overlay(alignment: .top) {
@@ -485,11 +623,12 @@ struct PaneTerminalView: View {
             width = $0.width
             height = $0.height
         }
-        .task(id: WatchKey(generation: store.generation, paneId: paneId)) {
+        .task(id: WatchKey(generation: store.generation, paneId: paneId, agent: agent)) {
             guard let client = store.client else { return }
+            let model = model
             await model.setFit(fitSize)
             await model.setLayout(fontSize: fontSize, wrapColumns: wrapColumns, paneColumns: paneColumns, agentPane: agentPane)
-            await model.watch(paneId, client: client)
+            await model.watch(paneId, agent: agent, client: client)
         }
         // Settle first: the keyboard and a pinch pass through sizes on the way.
         .task(id: fitSize) {
@@ -504,17 +643,40 @@ struct PaneTerminalView: View {
         }
     }
 
-    static let liveAnchor = "live"
+    /// Fetches earlier output without moving what you're reading: the new
+    /// rows land above, ready to scroll up through.
+    private func loadEarlier() async {
+        guard let client = store.client, heldTop == nil else { return }
+        heldTop = max(spot.top, 0) - historyHeight
+        await model.loadEarlier(paneId, agent: agent, client: client)
+        // Keep holding while the new rows lay out; each height change re-pins.
+        try? await Task.sleep(for: .milliseconds(300))
+        heldTop = nil
+        // Still at the top (it was a short page): keep going.
+        loadNearTop()
+    }
 
-    /// Fetches earlier output, then keeps you at the seam: the newest earlier
-    /// lines just above the bottom, ready to scroll up through.
-    private func loadEarlier(_ proxy: ScrollViewProxy) async {
-        guard let client = store.client else { return }
-        await model.loadEarlier(paneId, agent: store.snapshot?.pane(paneId)?.agent, client: client)
-        guard !model.history.isEmpty else { return }
-        // Let the new rows lay out first, or the jump lands on stale positions.
-        try? await Task.sleep(for: .milliseconds(80))
-        proxy.scrollTo(Self.liveAnchor, anchor: .bottom)
+    /// Loads more once you're near the top. The first load of a shell's history
+    /// waits for you to scroll there yourself (or a short screen), rather than
+    /// the moment the pane opens.
+    private func loadNearTop() {
+        guard nearTop.near, heldTop == nil, model.canLoadMore, model.status == .live else { return }
+        if model.historyState == .none, !scrolledByHand, !nearTop.short { return }
+        Task { await loadEarlier() }
+    }
+
+    /// While a load is in flight, keeps the view's top at the same distance
+    /// from the start of the live screen as history grows or shrinks above it.
+    private func holdPlace() {
+        guard let held = heldTop else { return }
+        let target = held + historyHeight
+        if abs(target - spot.top) > 0.5 { scroll.scrollTo(y: target - spot.inset) }
+    }
+
+    private struct ScrollSpot: Equatable {
+        /// Top edge of the viewport in content coordinates.
+        var top: CGFloat = 0
+        var inset: CGFloat = 0
     }
 
     private struct LayoutKey: Equatable {
@@ -527,6 +689,13 @@ struct PaneTerminalView: View {
     private struct WatchKey: Hashable {
         let generation: Int
         let paneId: String
+        /// Claude starting or quitting in the pane changes what the watch follows.
+        let agent: String?
+    }
+
+    private struct NearTop: Equatable {
+        var near = false
+        var short = false
     }
 }
 
@@ -537,6 +706,8 @@ private struct PaneMenu: View {
     let pane: Pane
     let workspaceLabel: String
     @Binding var selectedPaneId: String?
+    /// Tap target for the button, when it isn't in a navigation bar.
+    var hit: CGSize? = nil
     @State private var confirmClose = false
 
     private var cwd: String? { pane.foregroundCwd ?? pane.cwd }
@@ -572,6 +743,8 @@ private struct PaneMenu: View {
             }
         } label: {
             Image(systemName: "square.grid.2x2")
+                .frame(width: hit?.width, height: hit?.height)
+                .contentShape(.rect)
         }
         .accessibilityLabel("Pane actions")
         .disabled(!store.isConnected)
@@ -639,9 +812,20 @@ private struct HistoryHeader: View {
     }
 }
 
-/// Where loaded history ends and the live screen begins.
+/// Where loaded history ends and the live screen begins. A faint rule when
+/// they meet exactly; labeled when stitched on by text and possibly off.
 private struct LiveDivider: View {
+    let joined: Bool
+
     var body: some View {
+        if joined {
+            Rectangle().fill(Color.accentColor.opacity(0.25)).frame(height: 1).padding(.vertical, 4)
+        } else {
+            labeled
+        }
+    }
+
+    private var labeled: some View {
         HStack(spacing: 8) {
             Rectangle().fill(Color.accentColor.opacity(0.5)).frame(height: 1)
             Label("Live", systemImage: "dot.radiowaves.left.and.right")

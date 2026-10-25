@@ -31,7 +31,7 @@ final class ScrollbackTests: XCTestCase {
         save(app, "scrollback-top")
         if !live.exists, load.isHittable { load.tap() }
         XCTAssertTrue(live.waitForExistence(timeout: 15), "history didn't load")
-        // It stays at the seam (newest history just above the live screen), not the top.
+        // It holds your place (the top of the live screen), so the seam stays in view, not the top.
         let seam = NSPredicate(format: "hittable == true")
         expectation(for: seam, evaluatedWith: live)
         waitForExpectations(timeout: 5)
