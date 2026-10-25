@@ -89,7 +89,9 @@ struct RenderedParagraph: Identifiable, Sendable {
 /// follows Claude's session file and the conversation comes from there. The
 /// screen is shown only from its first message that's in that transcript on
 /// (see `TranscriptJoin`), so nothing repeats and nothing that scrolled off is
-/// lost. Other panes load earlier output on request and stitch it on by text.
+/// lost. What's loaded of the session is a `TranscriptTimeline`: runs of
+/// blocks with gaps, each gap filled as it scrolls into view. Other panes load
+/// earlier output on request and stitch it on by text.
 ///
 /// One per pane, kept by `HerdrStore`, so history survives swiping between
 /// panes, folding and reconnecting.
@@ -103,7 +105,7 @@ final class TerminalModel {
 
     private(set) var segments: [RenderedSegment] = []
     /// Earlier output, shown above the live screen.
-    private(set) var history: [RenderedSegment] = []
+    private(set) var history: [HistoryRow] = []
     private(set) var historyState: HistoryState = .none
     /// History meets the screen exactly (a Claude transcript joined by
     /// message), rather than stitched on by matching text.
@@ -145,34 +147,39 @@ final class TerminalModel {
 
     /// The gateway follows this pane's Claude session.
     private var following = false
-    private var blocks: [Block] = []
+    private var timeline = TranscriptTimeline()
+    /// Each block's lines, parsed, with a serial for segment ids.
+    private var parsed: [String: (serial: Int, lines: [StyledLine])] = [:]
     private var firstLines: [String] = []
-    /// `blocks` reach back to the start of the session.
-    private var transcriptStart = false
     private var cut: TranscriptJoin.Cut?
     /// Rendered blocks by id, for the current layout.
     private var renderedBlocks: [String: [RenderedSegment]] = [:]
     private var nextSerial = 0
-    private var firstSerial = 0
+    /// Gaps being fetched, and ones that failed, by where they start.
+    private var fillingGaps: Set<Int> = []
+    private var gapErrors: [Int: String] = [:]
 
-    private struct Block {
-        let id: String
-        /// Orders blocks for segment ids: older ones paged in get lower serials.
-        let serial: Int
-        let lines: [StyledLine]
-    }
+    static let gapFillLines = 300
 
-    private var usesTranscript: Bool { following && !blocks.isEmpty }
+    private var usesTranscript: Bool { following && timeline.hasBlocks }
 
     var isEmpty: Bool { segments.isEmpty }
 
-    /// Earlier output can be fetched now (on reaching the top, say).
+    /// Earlier output can be fetched now (on reaching the top, say). Claude
+    /// panes fill their gaps as they come into view instead.
     var canLoadMore: Bool {
+        if usesTranscript { return false }
         switch historyState {
-        case .none: status == .live
-        case .loaded(let more): more
-        default: false
+        case .none: return status == .live
+        case .loaded(let more): return more
+        default: return false
         }
+    }
+
+    /// The "Load earlier output" header: not when the top is a gap, which loads itself.
+    var showsHistoryHeader: Bool {
+        if case .gap? = history.first { return false }
+        return true
     }
 
     /// Runs until cancelled or the watch ends (socket drop, pane closed).
@@ -217,37 +224,62 @@ final class TerminalModel {
         }
     }
 
-    /// Takes in blocks from the gateway: the session's tail (on start, or a
-    /// switch to another session) or ones Claude just added.
+    /// Takes in blocks from the gateway: the session's tail (on start, a
+    /// reconnect, or a switch to another session) or ones Claude just added.
     private func apply(_ update: TranscriptUpdate) async {
-        let incoming = update.blocks
-        let parsed = await Task.detached(priority: .userInitiated) {
-            incoming.map { ANSIParser.parse($0.lines.joined(separator: "\n")) }
-        }.value
-        if update.reset == true {
-            // The same session again (a reconnect): keep the older blocks paged in before.
-            if let first = incoming.first, let i = blocks.firstIndex(where: { $0.id == first.id }), i > 0 {
-                blocks.removeSubrange(i...)
-            } else {
-                blocks = []
-                renderedBlocks = [:]
-                transcriptStart = update.start ?? false
-            }
+        let sessionBefore = timeline.session
+        await parse(update.blocks)
+        timeline.apply(update)
+        if timeline.session != sessionBefore {
+            // Another session: nothing loaded before applies.
+            let ids = Set(timeline.blocks.map(\.id))
+            parsed = parsed.filter { ids.contains($0.key) }
+            renderedBlocks = [:]
+            gapErrors = [:]
         }
-        let known = Set(blocks.map(\.id))
-        for (block, lines) in zip(incoming, parsed) where !known.contains(block.id) {
-            blocks.append(Block(id: block.id, serial: nextSerial, lines: lines))
-            nextSerial += 1
-        }
-        firstLines = blocks.map { $0.lines.first?.plainText ?? "" }
+        firstLines = timeline.blocks.map { parsed[$0.id]?.lines.first?.plainText ?? "" }
         if usesTranscript {
             historyLines = []
-            historyState = .loaded(more: !transcriptStart)
+            historyState = .loaded(more: false)
         } else if update.reset == true, historyState != .loading {
             // No session (yet): back to loading earlier output on request.
             historyState = .none
         }
         await joinScreen(force: true)
+    }
+
+    private func parse(_ blocks: [TranscriptBlock]) async {
+        let fresh = blocks.filter { parsed[$0.id] == nil }
+        guard !fresh.isEmpty else { return }
+        let lines = await Task.detached(priority: .userInitiated) {
+            fresh.map { ANSIParser.parse($0.lines.joined(separator: "\n")) }
+        }.value
+        for (block, lines) in zip(fresh, lines) {
+            parsed[block.id] = (nextSerial, lines)
+            nextSerial += 1
+        }
+    }
+
+    /// Fetches the end of a gap (the part nearest what you're reading, since
+    /// you reach gaps scrolling up); whatever's left stays a smaller gap.
+    func fillGap(_ gap: TranscriptTimeline.Gap) async {
+        guard usesTranscript, !fillingGaps.contains(gap.from), let watchId, let client else { return }
+        fillingGaps.insert(gap.from)
+        gapErrors[gap.from] = nil
+        await rerenderHistory()
+        do {
+            let range = try await client.transcriptRange(watch: watchId, session: timeline.session, from: gap.from,
+                                                         to: gap.to, lines: Self.gapFillLines)
+            await parse(range.blocks)
+            timeline.fill(gap, with: range)
+            firstLines = timeline.blocks.map { parsed[$0.id]?.lines.first?.plainText ?? "" }
+            fillingGaps.remove(gap.from)
+            await joinScreen(force: true)
+        } catch {
+            fillingGaps.remove(gap.from)
+            gapErrors[gap.from] = error.localizedDescription
+            await rerenderHistory()
+        }
     }
 
     /// Where the screen takes over from the transcript; re-renders the history
@@ -264,7 +296,11 @@ final class TerminalModel {
     /// `agent` is the pane's agent kind, if any ("claude" reads Claude's transcript).
     func loadEarlier(_ paneId: String, agent: String?, client: GatewayClient) async {
         guard historyState != .loading else { return }
-        if usesTranscript { return await loadOlderBlocks() }
+        if usesTranscript {
+            // Pull to refresh at the top: the top gap, if any.
+            if case .gap(let gap)? = timeline.items.first { await fillGap(gap) }
+            return
+        }
         let request = historyRequest == 0 ? Self.historyFirstRequest : min(historyRequest * 2, Self.historyMaxRequest)
         let previousCount = historyLines.count
         historyState = .loading
@@ -287,32 +323,6 @@ final class TerminalModel {
             }
         } catch {
             if !usesTranscript { historyState = .failed(error.localizedDescription) }
-        }
-    }
-
-    /// Pages in the session's blocks before the oldest one we have.
-    private func loadOlderBlocks() async {
-        guard !transcriptStart, let first = blocks.first, let watchId, let client else { return }
-        historyState = .loading
-        do {
-            let update = try await client.transcriptBefore(watch: watchId, before: first.id, lines: Self.historyFirstRequest)
-            let incoming = update.blocks
-            let parsed = await Task.detached(priority: .userInitiated) {
-                incoming.map { ANSIParser.parse($0.lines.joined(separator: "\n")) }
-            }.value
-            let known = Set(blocks.map(\.id))
-            var older: [Block] = []
-            for (block, lines) in zip(incoming, parsed).reversed() where !known.contains(block.id) {
-                firstSerial -= 1
-                older.insert(Block(id: block.id, serial: firstSerial, lines: lines), at: 0)
-            }
-            blocks.insert(contentsOf: older, at: 0)
-            firstLines = blocks.map { $0.lines.first?.plainText ?? "" }
-            transcriptStart = (update.start ?? true) || older.isEmpty
-            await joinScreen(force: true)
-            historyState = .loaded(more: !transcriptStart)
-        } catch {
-            historyState = .failed(error.localizedDescription)
         }
     }
 
@@ -350,11 +360,24 @@ final class TerminalModel {
         guard usesTranscript else {
             history = historyLines.isEmpty ? [] : await Self.render(historyLines, size: fontSize, columns: wrapColumns,
                                                                      pane: drawnColumns, agent: agentPane,
-                                                                     reflow: !historyLogical)
+                                                                     reflow: !historyLogical).map(HistoryRow.segment)
             return
         }
-        let shown = blocks.prefix(cut?.block ?? blocks.count)
-        let missing = shown.filter { renderedBlocks[$0.id] == nil }
+        // Everything before the block the screen takes over at, gaps included.
+        let upTo = cut?.block ?? Int.max
+        var shown: [TranscriptTimeline.Item] = []
+        var count = 0
+        for item in timeline.items {
+            if case .block = item {
+                if count == upTo { break }
+                count += 1
+            }
+            shown.append(item)
+        }
+        let missing: [(id: String, serial: Int, lines: [StyledLine])] = shown.compactMap {
+            guard case .block(let b) = $0, renderedBlocks[b.id] == nil, let p = parsed[b.id] else { return nil }
+            return (b.id, p.serial, p.lines)
+        }
         if !missing.isEmpty {
             let (size, columns, pane, agent) = (fontSize, wrapColumns, drawnColumns, agentPane)
             let rendered = await Task.detached(priority: .userInitiated) {
@@ -367,7 +390,14 @@ final class TerminalModel {
             }.value
             for (block, segments) in zip(missing, rendered) { renderedBlocks[block.id] = segments }
         }
-        history = shown.flatMap { renderedBlocks[$0.id] ?? [] }
+        history = shown.flatMap { item -> [HistoryRow] in
+            switch item {
+            case .block(let b):
+                return (renderedBlocks[b.id] ?? []).map(HistoryRow.segment)
+            case .gap(let g):
+                return [.gap(GapRow(gap: g, loading: fillingGaps.contains(g.from), error: gapErrors[g.from]))]
+            }
+        }
     }
 
     /// The width the pane's program drew at, which can be less than herdr's layout says.
@@ -410,6 +440,26 @@ final class TerminalModel {
             return rendered
         }
     }
+}
+
+/// A row above the live screen: rendered output, or a stretch of a Claude
+/// session not loaded yet.
+enum HistoryRow: Identifiable, Sendable {
+    case segment(RenderedSegment)
+    case gap(GapRow)
+
+    var id: String {
+        switch self {
+        case .segment(let s): "s\(s.id)"
+        case .gap(let g): "g\(g.gap.from)"
+        }
+    }
+}
+
+struct GapRow: Equatable, Sendable {
+    let gap: TranscriptTimeline.Gap
+    let loading: Bool
+    let error: String?
 }
 
 extension RenderedSegment {

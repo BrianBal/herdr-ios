@@ -251,6 +251,19 @@ public actor GatewayClient {
         return (r.watch, stream, following ? updates : nil)
     }
 
+    /// Blocks of a watched Claude pane's session whose entries start in
+    /// `from..<to`: the last `lines` worth (`fromEnd`) or the first. Fails with
+    /// `session_changed` if the pane is on another session than `session` now.
+    public func transcriptRange(watch: String, session: String?, from: Int, to: Int, lines: Int,
+                                fromEnd: Bool = true) async throws -> TranscriptRange {
+        var params: [String: JSONValue] = [
+            "watch": .string(watch), "from": .number(Double(from)), "to": .number(Double(to)),
+            "lines": .number(Double(lines)), "from_end": .bool(fromEnd),
+        ]
+        if let session { params["session"] = .string(session) }
+        return try await call("gw.transcript_range", params: .object(params), timeout: 30)
+    }
+
     /// Older blocks of a watched Claude pane's session, before the block `before`.
     public func transcriptBefore(watch: String, before: String, lines: Int) async throws -> TranscriptUpdate {
         try await call("gw.transcript_before", params: [

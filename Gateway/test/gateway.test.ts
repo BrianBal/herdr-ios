@@ -295,7 +295,8 @@ describe("claude transcript on a watch", () => {
     const file = join(proj, "s.jsonl");
     const say = (uuid: string, text: string) =>
       JSON.stringify({ type: "assistant", uuid, message: { content: [{ type: "text", text }] } }) + "\n";
-    writeFileSync(file, say("a1", "first") + say("a2", "second"));
+    const a1 = say("a1", "first");
+    writeFileSync(file, a1 + say("a2", "second"));
     const c = new Client();
     await c.open();
     try {
@@ -303,14 +304,24 @@ describe("claude transcript on a watch", () => {
       const { result } = await c.next((m) => m.id === "w");
       expect(result.transcript).toBe(true);
       const first = await c.next((m) => m.transcript);
-      expect(first.transcript).toEqual({ reset: true, blocks: [{ id: "a2:0", lines: ["⏺ second"] }], start: false });
+      expect(first.transcript).toEqual({
+        reset: true, session: "s", blocks: [{ id: "a2:0", at: a1.length, lines: ["⏺ second"] }], start: false, prev: 0,
+      });
 
       appendFileSync(file, say("a3", "third"));
       const next = await c.next((m) => m.transcript, 3000);
-      expect(next.transcript).toEqual({ blocks: [{ id: "a3:0", lines: ["⏺ third"] }] });
+      expect(next.transcript.blocks.map((b: any) => b.id)).toEqual(["a3:0"]);
 
       c.send({ id: "b", method: "gw.transcript_before", params: { watch: result.watch, before: "a2:0", lines: 50 } });
-      expect((await c.next((m) => m.id === "b")).result).toEqual({ type: "transcript", blocks: [{ id: "a1:0", lines: ["⏺ first"] }], start: true });
+      expect((await c.next((m) => m.id === "b")).result.blocks.map((b: any) => b.id)).toEqual(["a1:0"]);
+
+      // A gap's range: everything before a2.
+      c.send({ id: "r", method: "gw.transcript_range", params: { watch: result.watch, session: "s", from: 0, to: a1.length } });
+      expect((await c.next((m) => m.id === "r")).result).toEqual({
+        type: "transcript_range", blocks: [{ id: "a1:0", at: 0, lines: ["⏺ first"] }], more: false, edge: 0,
+      });
+      c.send({ id: "x", method: "gw.transcript_range", params: { watch: result.watch, session: "other", from: 0, to: 9 } });
+      expect((await c.next((m) => m.id === "x")).error.code).toBe("session_changed");
     } finally {
       c.close();
     }

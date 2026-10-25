@@ -109,15 +109,29 @@ to `gw.watch_pane` (`watch_started` then says `"transcript": true`). The watch
 sends the session's last blocks, at least that many lines, and then each
 block Claude appends, about once a second:
 ```json
-← {"watch":"wt1","transcript":{"reset":true,"blocks":[{"id":"<uuid>:0","lines":["⏺ ..."]}],"start":false}}
+← {"watch":"wt1","transcript":{"reset":true,"session":"<id>","blocks":[{"id":"<uuid>:0","at":17691842,"lines":["⏺ ..."]}],"start":false,"prev":17690112}}
 ← {"watch":"wt1","transcript":{"blocks":[...]}}
 ```
-`reset` replaces what the client has. It is sent at the start, and again
-when the pane moves to another session (for example after `/clear`). `start`
-means nothing older exists. Page back with
-`gw.transcript_before {watch, before: <block id>, lines}`. The app joins the
-blocks to the screen by message, so the screen is shown only from its first
-message that's already in the transcript.
+`at` is where the block's entry starts in the session file. The file only
+grows, so `at` is a fixed address for the block, and a client can keep
+blocks across reconnects with gaps between them.
+
+- `reset` replaces the tail. It is sent at the start, and again when the pane
+  moves to another session (for example after `/clear`, when `session`
+  changes).
+- `start` means nothing older exists.
+- `prev` is the `at` of the entry just before the first block, when known.
+  If the client already has that block, the new tail follows on with no gap.
+
+To fill a gap, call
+`gw.transcript_range {watch, session, from, to, lines, from_end?}`. It
+returns blocks whose entries start in `[from, to)`: the last `lines` worth by
+default, or the first with `from_end: false`. The reply includes `more` and
+`edge`. Reading from the end, what's left of the gap is `[from, edge)`.
+`session_changed` means the pane has moved on.
+
+The app joins the blocks to the screen by message, so the screen is shown
+only from its first message that's already in the transcript.
 
 ## Shell completion
 

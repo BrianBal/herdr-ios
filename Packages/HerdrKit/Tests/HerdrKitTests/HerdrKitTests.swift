@@ -613,3 +613,53 @@ extension ScrollbackTests {
         #expect(TranscriptJoin.cut(firstLines: ["⏺ Something else entirely."], screen: screen) == nil)
     }
 }
+
+@Suite struct TranscriptTimelineTests {
+    static func b(_ n: Int) -> TranscriptBlock { TranscriptBlock(id: "b\(n)", at: n * 100, lines: ["⏺ \(n)"]) }
+    static func describe(_ t: TranscriptTimeline) -> String {
+        t.items.map { item in
+            switch item {
+            case .block(let b): b.id
+            case .gap(let g): "gap(\(g.from)..<\(g.to))"
+            }
+        }.joined(separator: " ")
+    }
+
+    @Test func tailWithAGapToTheStart() {
+        var t = TranscriptTimeline()
+        t.apply(TranscriptUpdate(reset: true, session: "s", blocks: [Self.b(5), Self.b(6)], start: false, prev: 400))
+        #expect(Self.describe(t) == "gap(0..<500) b5 b6")
+        t.apply(TranscriptUpdate(blocks: [Self.b(7), Self.b(6)]))
+        #expect(Self.describe(t) == "gap(0..<500) b5 b6 b7")
+    }
+
+    @Test func fillingAGapFromItsEnd() {
+        var t = TranscriptTimeline()
+        t.apply(TranscriptUpdate(reset: true, session: "s", blocks: [Self.b(5)], start: false))
+        let gap = TranscriptTimeline.Gap(from: 0, to: 500)
+        t.fill(gap, with: TranscriptRange(blocks: [Self.b(3), Self.b(4)], more: true, edge: 300))
+        #expect(Self.describe(t) == "gap(0..<300) b3 b4 b5")
+        t.fill(TranscriptTimeline.Gap(from: 0, to: 300), with: TranscriptRange(blocks: [Self.b(0)], more: false, edge: 0))
+        #expect(Self.describe(t) == "b0 b3 b4 b5")
+    }
+
+    @Test func comingBackToTheSameSessionKeepsWhatWasLoaded() {
+        var t = TranscriptTimeline()
+        t.apply(TranscriptUpdate(reset: true, session: "s", blocks: [Self.b(0), Self.b(1), Self.b(2)], start: true))
+        // Reconnect much later: the tail starts at b8, after things we never saw.
+        t.apply(TranscriptUpdate(reset: true, session: "s", blocks: [Self.b(8), Self.b(9)], start: false, prev: 700))
+        #expect(Self.describe(t) == "b0 b1 b2 gap(201..<800) b8 b9")
+        // Soon after: the tail overlaps what we have, so no gap.
+        t.apply(TranscriptUpdate(reset: true, session: "s", blocks: [Self.b(9), Self.b(10)], start: false, prev: 800))
+        #expect(Self.describe(t) == "b0 b1 b2 gap(201..<800) b8 b9 b10")
+    }
+
+    @Test func anotherSessionStartsOver() {
+        var t = TranscriptTimeline()
+        t.apply(TranscriptUpdate(reset: true, session: "s", blocks: [Self.b(0)], start: true))
+        t.apply(TranscriptUpdate(reset: true, session: "t", blocks: [Self.b(1)], start: true))
+        #expect(Self.describe(t) == "b1")
+        t.apply(TranscriptUpdate(reset: true, session: nil, blocks: []))
+        #expect(!t.hasBlocks)
+    }
+}

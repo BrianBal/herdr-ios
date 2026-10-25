@@ -21,7 +21,8 @@ import { timingSafeEqual } from "node:crypto";
 import type { GatewayConfig } from "./config";
 import { HerdrSocket, HerdrUnavailable, type HerdrResponse } from "./herdr";
 import type { ApnsEnvironment, DeviceStore, Notifier } from "./push";
-import { claudeTranscript, findClaudeSession, TranscriptFollower } from "./transcript";
+import { basename } from "node:path";
+import { claudeTranscript, findClaudeSession, readRange, TranscriptFollower } from "./transcript";
 import { complete, looksRemote } from "./complete";
 import { UploadError, type Uploads } from "./uploads";
 import { fitSize, PaneFit } from "./fit";
@@ -303,8 +304,9 @@ export function createGateway({ config, herdr, push, uploads, herdrBin, claudeHo
         if (path !== t.follower?.path || !t.sent) {
           t.follower = path ? new TranscriptFollower(path) : undefined;
           t.sent = true;
-          const tail = t.follower?.tail(t.lines) ?? { blocks: [], start: true };
-          send(ws, { watch: watchId, transcript: { reset: true, ...tail } });
+          const tail = t.follower?.tail(t.lines) ?? { blocks: [], start: true, prev: null };
+          const session = t.follower ? basename(t.follower.path, ".jsonl") : null;
+          send(ws, { watch: watchId, transcript: { reset: true, session, ...tail } });
           return;
         }
       }
@@ -418,6 +420,25 @@ export function createGateway({ config, herdr, push, uploads, herdrBin, claudeHo
         const lines = Math.min(20000, Math.max(1, Number(params?.lines) || 1000));
         const before = typeof params?.before === "string" ? params.before : undefined;
         send(ws, { id, result: { type: "transcript", ...f.tail(lines, before) } });
+        return;
+      }
+      case "gw.transcript_range": {
+        // Fills a gap in a client's copy of the session: blocks whose entries start
+        // in [from, to), the last `lines` worth (from_end, default) or the first.
+        const w = st.watches.get(String(params?.watch));
+        const f = w?.transcript?.follower;
+        if (!f) return send(ws, errorMsg(id, "not_found", "this watch isn't following a Claude session"));
+        if (params?.session != null && params.session !== basename(f.path, ".jsonl")) {
+          return send(ws, errorMsg(id, "session_changed", "the pane is on another Claude session now"));
+        }
+        const from = Math.max(0, Number(params?.from) || 0);
+        const to = params?.to == null ? Number.MAX_SAFE_INTEGER : Math.max(from, Number(params.to) || 0);
+        const lines = Math.min(20000, Math.max(1, Number(params?.lines) || 1000));
+        try {
+          send(ws, { id, result: { type: "transcript_range", ...readRange(f.path, from, to, lines, params?.from_end !== false) } });
+        } catch (e: any) {
+          send(ws, errorMsg(id, "gateway_error", e.message));
+        }
         return;
       }
       case "gw.unwatch_pane": {

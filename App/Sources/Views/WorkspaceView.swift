@@ -548,9 +548,16 @@ struct PaneTerminalView: View {
                 ScrollView(wrap ? .vertical : [.vertical, .horizontal]) {
                     VStack(alignment: .leading, spacing: 0) {
                         VStack(alignment: .leading, spacing: 0) {
-                            HistoryHeader(state: model.historyState) { Task { await loadEarlier() } }
-                            ForEach(model.history) { segment in
-                                SegmentView(segment: segment, wrap: wrap)
+                            if model.showsHistoryHeader {
+                                HistoryHeader(state: model.historyState) { Task { await loadEarlier() } }
+                            }
+                            ForEach(model.history) { row in
+                                switch row {
+                                case .segment(let segment):
+                                    SegmentView(segment: segment, wrap: wrap)
+                                case .gap(let gap):
+                                    GapMarker(row: gap) { Task { await fill(gap.gap) } }
+                                }
                             }
                             if !model.history.isEmpty { LiveDivider(joined: model.historyJoined) }
                         }
@@ -654,6 +661,16 @@ struct PaneTerminalView: View {
         heldTop = nil
         // Still at the top (it was a short page): keep going.
         loadNearTop()
+    }
+
+    /// Fills a gap in a Claude session's history, keeping what's below it
+    /// (what you scrolled up from) where it is while the lines pop in above.
+    private func fill(_ gap: TranscriptTimeline.Gap) async {
+        guard heldTop == nil else { return }
+        heldTop = max(spot.top, 0) - historyHeight
+        await model.fillGap(gap)
+        try? await Task.sleep(for: .milliseconds(300))
+        heldTop = nil
     }
 
     /// Loads more once you're near the top. The first load of a shell's history
@@ -809,6 +826,51 @@ private struct HistoryHeader: View {
 
     private func note(_ text: String) -> some View {
         Text(text).font(.caption).foregroundStyle(TerminalRenderer.foreground.opacity(0.5))
+    }
+}
+
+/// A stretch of a Claude session not loaded yet. It loads as soon as it
+/// scrolls into view; what's left of it after each load stays a gap.
+private struct GapMarker: View {
+    let row: GapRow
+    let load: () -> Void
+    @State private var visible = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            line
+            Group {
+                if row.loading {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini).tint(TerminalRenderer.foreground)
+                        Text("Loading earlier messages")
+                    }
+                } else if row.error != nil {
+                    Button(action: load) { Label("Couldn't load · Try again", systemImage: "arrow.clockwise") }
+                        .buttonStyle(.plain)
+                } else {
+                    Button(action: load) { Label("Earlier messages", systemImage: "arrow.up") }
+                        .buttonStyle(.plain)
+                }
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(TerminalRenderer.foreground.opacity(0.6))
+            .fixedSize()
+            line
+        }
+        .padding(.vertical, 12)
+        .onScrollVisibilityChange(threshold: 0.01) { visible in
+            self.visible = visible
+            if visible, !row.loading, row.error == nil { load() }
+        }
+        .onChange(of: row) { _, row in
+            // A smaller gap left after a load, still on screen: keep going.
+            if visible, !row.loading, row.error == nil { load() }
+        }
+    }
+
+    private var line: some View {
+        Rectangle().fill(TerminalRenderer.foreground.opacity(0.2)).frame(height: 1)
     }
 }
 

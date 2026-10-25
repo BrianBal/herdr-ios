@@ -110,14 +110,19 @@ function block(marker: string, text: string): string[] {
   return lines.map((l, i) => (i === 0 ? `${marker} ${l}` : l ? `  ${l}` : ""));
 }
 
-/** One thing Claude showed: a prompt, a reply or a tool call. `id` is stable across reads. */
+/**
+ * One thing Claude showed: a prompt, a reply or a tool call. `id` is stable
+ * across reads; `at` is where its entry starts in the session file, which
+ * only ever grows, so it addresses the block for range reads.
+ */
 export interface TranscriptBlock {
   id: string;
+  at: number;
   lines: string[];
 }
 
-/** The blocks one JSONL entry adds, if any. */
-export function renderEntry(line: string): TranscriptBlock[] {
+/** The blocks one JSONL entry (starting at byte `at`) adds, if any. */
+export function renderEntry(line: string, at = 0): TranscriptBlock[] {
   if (!line.trim()) return [];
   let o: any;
   try {
@@ -137,13 +142,13 @@ export function renderEntry(line: string): TranscriptBlock[] {
           : "";
     // Slash-command plumbing and system reminders aren't things you typed.
     if (!text.trim() || text.trimStart().startsWith("<")) return [];
-    return [{ id: id(0), lines: block("❯", text) }];
+    return [{ id: id(0), at, lines: block("❯", text) }];
   }
   if (o.type !== "assistant" || !Array.isArray(content)) return [];
   const out: TranscriptBlock[] = [];
   content.forEach((c: any, i: number) => {
-    if (c?.type === "text" && c.text?.trim()) out.push({ id: id(i), lines: block("⏺", markdownToAnsi(c.text)) });
-    else if (c?.type === "tool_use") out.push({ id: id(i), lines: [`⏺ ${toolSummary(c.name, c.input)}`] });
+    if (c?.type === "text" && c.text?.trim()) out.push({ id: id(i), at, lines: block("⏺", markdownToAnsi(c.text)) });
+    else if (c?.type === "tool_use") out.push({ id: id(i), at, lines: [`⏺ ${toolSummary(c.name, c.input)}`] });
   });
   return out;
 }
@@ -163,7 +168,7 @@ export function joinBlocks(blocks: TranscriptBlock[]): string[] {
  * one-line tool calls; thinking, tool output and subagent traffic are left out.
  */
 export function renderClaudeTranscript(jsonl: string): string[] {
-  return joinBlocks(jsonl.split("\n").flatMap(renderEntry));
+  return joinBlocks(jsonl.split("\n").flatMap((l) => renderEntry(l)));
 }
 
 /** The pane's Claude session as screen-like text, last `maxLines` lines. */
@@ -172,6 +177,119 @@ export function claudeTranscript(cwd: string, title: string | undefined, maxLine
   if (!file) return undefined;
   const lines = renderClaudeTranscript(readTail(file, TAIL_BYTES));
   return { text: lines.slice(-maxLines).join("\n"), truncated: lines.length > maxLines, file };
+}
+
+/** Calls `each` with every complete line in `buf` (which starts at byte `base`); returns the unfinished rest. */
+function eachLine(buf: Buffer, base: number, each: (line: string, at: number) => void): Buffer {
+  let pos = 0;
+  for (let nl = buf.indexOf(10); nl >= 0; nl = buf.indexOf(10, pos)) {
+    each(buf.toString("utf8", pos, nl), base + pos);
+    pos = nl + 1;
+  }
+  return buf.subarray(pos);
+}
+
+function readBytes(path: string, start: number, end: number): Buffer {
+  const fd = openSync(path, "r");
+  try {
+    const buf = Buffer.alloc(Math.max(0, end - start));
+    const n = readSync(fd, buf, 0, buf.length, start);
+    return buf.subarray(0, n);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+const RANGE_CHUNK = 1024 * 1024;
+/** Most of the file one range read scans; past that it says where it got to. */
+const RANGE_SCAN_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Blocks whose entries start in [from, to), about `lines` lines of them: the
+ * last ones (`fromEnd`) or the first. `more` says some of the range is left;
+ * `edge` is how far the read got (the range left is [from, edge) reading from
+ * the end, [edge, to) from the start), so a client's gap shrinks even when a
+ * stretch held nothing worth showing.
+ */
+export function readRange(path: string, from: number, to: number, lines: number, fromEnd = true, chunkBytes = RANGE_CHUNK) {
+  to = Math.min(to, statSync(path).size);
+  from = Math.max(0, Math.min(from, to));
+  const out: TranscriptBlock[] = [];
+  let count = 0;
+  const full = () => count >= lines;
+  const take = (line: string, at: number) => {
+    const blocks = renderEntry(line, at);
+    for (const b of blocks) count += b.lines.length + 1;
+    return blocks;
+  };
+  let scanned = 0;
+  if (fromEnd) {
+    // Backwards a chunk at a time; `end` is always a line start.
+    let end = to;
+    let edge = to;
+    let exhausted = end <= from;
+    while (!exhausted && !full() && scanned < RANGE_SCAN_BYTES) {
+      // Grow the chunk until it holds a line start (a line can be longer than a chunk).
+      // The byte before `end` is the newline ending the line above, so look before it.
+      const lineStart = (buf: Buffer, start: number) => (start === 0 ? -1 : buf.subarray(0, buf.length - 1).indexOf(10));
+      let start = Math.max(0, end - chunkBytes);
+      let buf = readBytes(path, start, end);
+      let first = lineStart(buf, start);
+      while (first < 0 && start > 0) {
+        start = Math.max(0, start - chunkBytes);
+        buf = readBytes(path, start, end);
+        first = lineStart(buf, start);
+      }
+      scanned += buf.length;
+      const chunk: { line: string; at: number }[] = [];
+      eachLine(buf.subarray(first + 1), start + first + 1, (line, at) => chunk.push({ line, at }));
+      for (let i = chunk.length - 1; i >= 0 && !full(); i--) {
+        if (chunk[i].at < from) {
+          exhausted = true;
+          break;
+        }
+        out.unshift(...take(chunk[i].line, chunk[i].at));
+        edge = chunk[i].at;
+      }
+      end = start + first + 1;
+      if (end <= from || start === 0) exhausted = true;
+    }
+    if (exhausted && !full()) edge = from;
+    return { blocks: out, more: edge > from, edge };
+  }
+  // Forwards. `from` may be mid-line (just past a block the client has): start at the next line.
+  let pos = from;
+  if (pos > 0 && readBytes(path, pos - 1, pos)[0] !== 10) {
+    while (pos < to) {
+      const buf = readBytes(path, pos, Math.min(to, pos + chunkBytes));
+      if (!buf.length) {
+        pos = to;
+        break;
+      }
+      const nl = buf.indexOf(10);
+      pos += nl < 0 ? buf.length : nl + 1;
+      if (nl >= 0) break;
+    }
+  }
+  let edge = pos;
+  let rest = Buffer.alloc(0);
+  let readPos = pos;
+  while (readPos < to && !full() && scanned < RANGE_SCAN_BYTES) {
+    const buf = readBytes(path, readPos, Math.min(to, readPos + chunkBytes));
+    if (!buf.length) break;
+    scanned += buf.length;
+    const base = readPos - rest.length;
+    readPos += buf.length;
+    rest = Buffer.from(
+      eachLine(rest.length ? Buffer.concat([rest, buf]) : buf, base, (line, at) => {
+        if (full()) return;
+        out.push(...take(line, at));
+        edge = at + Buffer.byteLength(line) + 1;
+      }),
+    );
+  }
+  if (!full() && readPos >= to) edge = to;
+  return { blocks: out, more: edge < to, edge };
 }
 
 /**
@@ -183,13 +301,21 @@ export class TranscriptFollower {
   /** True when the file had more than we read at the start. */
   readonly clipped: boolean;
   private offset: number;
-  private partial = "";
+  private partial = Buffer.alloc(0);
+  private partialAt = 0;
 
   constructor(readonly path: string) {
     const size = statSync(path).size;
     this.clipped = size > TAIL_BYTES;
     this.offset = Math.max(0, size - TAIL_BYTES);
-    this.read(size, this.offset > 0);
+    if (this.offset > 0) {
+      // Start at a line boundary.
+      const head = readBytes(path, this.offset, Math.min(size, this.offset + RANGE_CHUNK));
+      const nl = head.indexOf(10);
+      this.offset = nl < 0 ? size : this.offset + nl + 1;
+    }
+    this.partialAt = this.offset;
+    this.read(size);
   }
 
   /** New blocks since the last call; null when the file shrank (rewritten), so start over. */
@@ -202,40 +328,44 @@ export class TranscriptFollower {
     }
     if (size < this.offset) return null;
     if (size === this.offset) return [];
-    return this.read(size, false);
+    return this.read(size);
   }
 
-  private read(size: number, skipFirstLine: boolean): TranscriptBlock[] {
-    const fd = openSync(this.path, "r");
-    let text: string;
-    try {
-      const buf = Buffer.alloc(size - this.offset);
-      readSync(fd, buf, 0, buf.length, this.offset);
-      text = buf.toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-    this.offset = size;
-    if (skipFirstLine) text = text.slice(text.indexOf("\n") + 1);
-    const lines = (this.partial + text).split("\n");
+  private read(size: number): TranscriptBlock[] {
+    const buf = readBytes(this.path, this.offset, size);
+    this.offset += buf.length;
+    const added: TranscriptBlock[] = [];
+    const joined = this.partial.length ? Buffer.concat([this.partial, buf]) : buf;
     // The last line may still be being written.
-    this.partial = lines.pop() ?? "";
-    const added = lines.flatMap(renderEntry);
+    const rest = eachLine(joined, this.partialAt, (line, at) => added.push(...renderEntry(line, at)));
+    this.partial = Buffer.from(rest);
+    this.partialAt = this.offset - rest.length;
     this.blocks.push(...added);
     return added;
   }
 
-  /** The last blocks holding at least `lines` lines, ending before `before` (an id) if given. */
-  tail(lines: number, before?: string): { blocks: TranscriptBlock[]; start: boolean } {
+  /**
+   * The last blocks holding at least `lines` lines, ending before `before` (an
+   * id) if given. `start`: nothing older exists. `prev`: where the entry just
+   * before them starts, when we know (so a client can tell they follow on from
+   * blocks it has).
+   */
+  tail(lines: number, before?: string): { blocks: TranscriptBlock[]; start: boolean; prev: number | null } {
     let end = this.blocks.length;
     if (before !== undefined) {
       // Not ours (the pane moved to another session): nothing older to give.
       end = this.blocks.findIndex((b) => b.id === before);
-      if (end < 0) return { blocks: [], start: true };
+      if (end < 0) return { blocks: [], start: true, prev: null };
     }
     let begin = end;
     let n = 0;
     while (begin > 0 && n < lines) n += this.blocks[--begin].lines.length + 1;
-    return { blocks: this.blocks.slice(begin, end), start: begin === 0 && !this.clipped };
+    // Whole entries only: blocks of one entry share `at`.
+    while (begin > 0 && this.blocks[begin - 1].at === this.blocks[begin]?.at) begin--;
+    return {
+      blocks: this.blocks.slice(begin, end),
+      start: begin === 0 && !this.clipped,
+      prev: begin > 0 ? this.blocks[begin - 1].at : null,
+    };
   }
 }
