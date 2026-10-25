@@ -10,7 +10,10 @@
 //   * gw.* methods are handled by the gateway (see handleGatewayMethod),
 //     including gw.push_* for push notification sign-up (see push.ts).
 //     gw.watch_pane with cols/rows (and gw.fit_watch later) also holds the
-//     pane at that size while it's watched (see fit.ts).
+//     pane at that size while it's watched (see fit.ts). With transcript_lines,
+//     a Claude pane's watch also carries its conversation from Claude's
+//     session file: {watch, transcript: {reset?, blocks, start?}} (see
+//     transcript.ts), and gw.transcript_before pages further back.
 // Gateway-originated pushes never carry an `id`.
 
 import type { Server, ServerWebSocket } from "bun";
@@ -18,7 +21,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { GatewayConfig } from "./config";
 import { HerdrSocket, HerdrUnavailable, type HerdrResponse } from "./herdr";
 import type { ApnsEnvironment, DeviceStore, Notifier } from "./push";
-import { claudeTranscript } from "./transcript";
+import { claudeTranscript, findClaudeSession, TranscriptFollower } from "./transcript";
 import { complete, looksRemote } from "./complete";
 import { UploadError, type Uploads } from "./uploads";
 import { fitSize, PaneFit } from "./fit";
@@ -28,6 +31,10 @@ const MAX_INFLIGHT = 64;
 const MAX_WATCHES = 8;
 const MAX_SUBSCRIPTIONS = 16;
 const BACKPRESSURE_BYTES = 2 * 1024 * 1024;
+/** How often a watch checks Claude's session file for new messages. */
+const TRANSCRIPT_POLL_MS = 1000;
+/** How often it looks up which session file the pane is on (a /clear starts a new one). */
+const TRANSCRIPT_RESOLVE_MS = 5000;
 
 interface Watch {
   pane_id: string;
@@ -42,6 +49,21 @@ interface Watch {
   stopped: boolean;
   /** Holds the pane at the client's size while watched. */
   fit?: PaneFit;
+  /** Following the pane's Claude session, when the client asked for it. */
+  transcript?: TranscriptWatch;
+}
+
+interface TranscriptWatch {
+  /** How much to send at the start (and after a switch to another session). */
+  lines: number;
+  follower?: TranscriptFollower;
+  /** The pane's cwd and title when the follower was picked. */
+  key?: string;
+  polledAt: number;
+  resolvedAt: number;
+  busy: boolean;
+  /** Whether the first (reset) message went out. */
+  sent: boolean;
 }
 
 interface ClientState {
@@ -71,6 +93,8 @@ export interface GatewayOptions {
   uploads?: Uploads;
   /** The herdr CLI, for holding panes at the phone's size; without it watches don't resize. */
   herdrBin?: string;
+  /** Where Claude keeps its sessions (~ by default); tests point it elsewhere. */
+  claudeHome?: string;
   log?: (msg: string) => void;
 }
 
@@ -116,7 +140,7 @@ function inputTarget(method: string, params: any): string | null {
   return null;
 }
 
-export function createGateway({ config, herdr, push, uploads, herdrBin, log = () => {} }: GatewayOptions) {
+export function createGateway({ config, herdr, push, uploads, herdrBin, claudeHome, log = () => {} }: GatewayOptions) {
   const clients = new Set<WS>();
   const deny = new Set(config.deny_methods);
   const allowedUsers = new Set(config.allowed_users);
@@ -243,6 +267,13 @@ export function createGateway({ config, herdr, push, uploads, herdrBin, log = ()
         } else {
           w.quietTicks++;
         }
+        const t = w.transcript;
+        if (t && !t.busy && Date.now() - t.polledAt >= TRANSCRIPT_POLL_MS) {
+          t.busy = true;
+          followTranscript(ws, w, t, watchId)
+            .catch((e) => log(`transcript for ${w.pane_id}: ${e.message}`))
+            .finally(() => (t.busy = false));
+        }
         delay = Math.min(w.idleMs, Math.round(w.intervalMs * 1.5 ** w.quietTicks));
       }
     } catch (e: any) {
@@ -252,6 +283,40 @@ export function createGateway({ config, herdr, push, uploads, herdrBin, log = ()
       w.polling = false;
     }
     scheduleWatch(ws, w, watchId, delay);
+  }
+
+  // Sends the session's last blocks when the watch starts or the pane moves
+  // to another session, then each block Claude appends.
+  async function followTranscript(ws: WS, w: Watch, t: TranscriptWatch, watchId: string) {
+    const now = Date.now();
+    t.polledAt = now;
+    if (!t.follower || now - t.resolvedAt >= TRANSCRIPT_RESOLVE_MS) {
+      t.resolvedAt = now;
+      const pane = (await herdr.call("pane.get", { pane_id: w.pane_id }, 3000)).result?.pane;
+      if (w.stopped) return;
+      const cwd = pane?.foreground_cwd ?? pane?.cwd;
+      const key = `${pane?.agent}\n${cwd}\n${pane?.terminal_title_stripped}`;
+      if (key !== t.key || !t.follower) {
+        t.key = key;
+        const path = pane?.agent === "claude" && cwd ? findClaudeSession(cwd, pane.terminal_title_stripped, claudeHome) : undefined;
+        // Always answer once, so the client knows whether there's a transcript at all.
+        if (path !== t.follower?.path || !t.sent) {
+          t.follower = path ? new TranscriptFollower(path) : undefined;
+          t.sent = true;
+          const tail = t.follower?.tail(t.lines) ?? { blocks: [], start: true };
+          send(ws, { watch: watchId, transcript: { reset: true, ...tail } });
+          return;
+        }
+      }
+    }
+    const added = t.follower?.poll();
+    if (added === null) {
+      // Rewritten under us: pick it up again from scratch next time.
+      t.follower = undefined;
+      t.key = undefined;
+    } else if (added?.length) {
+      send(ws, { watch: watchId, transcript: { blocks: added } });
+    }
   }
 
   function stopWatch(ws: WS, watchId: string): boolean {
@@ -322,9 +387,13 @@ export function createGateway({ config, herdr, push, uploads, herdrBin, log = ()
           polling: false,
           stopped: false,
         };
+        if (params.transcript_lines != null) {
+          const lines = Math.min(20000, Math.max(1, Number(params.transcript_lines) || 1000));
+          w.transcript = { lines, polledAt: 0, resolvedAt: 0, busy: false, sent: false };
+        }
         setFit(w, params.cols, params.rows);
         st.watches.set(watchId, w);
-        send(ws, { id, result: { type: "watch_started", watch: watchId } });
+        send(ws, { id, result: { type: "watch_started", watch: watchId, transcript: !!w.transcript } });
         pollWatch(ws, w, watchId);
         return;
       }
@@ -339,6 +408,16 @@ export function createGateway({ config, herdr, push, uploads, herdrBin, log = ()
         w.quietTicks = 0;
         scheduleWatch(ws, w, String(params.watch), 150);
         send(ws, { id, result: { type: "ok", fitted: !!w.fit } });
+        return;
+      }
+      case "gw.transcript_before": {
+        // Older blocks of a watched pane's Claude session, before the block `before`.
+        const w = st.watches.get(String(params?.watch));
+        const f = w?.transcript?.follower;
+        if (!f) return send(ws, errorMsg(id, "not_found", "this watch isn't following a Claude session"));
+        const lines = Math.min(20000, Math.max(1, Number(params?.lines) || 1000));
+        const before = typeof params?.before === "string" ? params.before : undefined;
+        send(ws, { id, result: { type: "transcript", ...f.tail(lines, before) } });
         return;
       }
       case "gw.unwatch_pane": {
@@ -367,7 +446,7 @@ export function createGateway({ config, herdr, push, uploads, herdrBin, log = ()
           const pane = info.result?.pane;
           if (!pane) return send(ws, errorMsg(id, "not_found", "no such pane"));
           if (pane.agent !== "claude") return send(ws, errorMsg(id, "not_claude", "this pane isn't running Claude Code"));
-          const t = claudeTranscript(pane.foreground_cwd ?? pane.cwd, pane.terminal_title_stripped, lines);
+          const t = claudeTranscript(pane.foreground_cwd ?? pane.cwd, pane.terminal_title_stripped, lines, claudeHome);
           if (!t) return send(ws, errorMsg(id, "not_found", "no Claude session found for this pane's folder"));
           send(ws, { id, result: { type: "transcript", text: t.text, truncated: t.truncated } });
         } catch (e: any) {

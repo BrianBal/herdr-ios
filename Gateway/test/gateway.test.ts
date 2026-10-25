@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { claudeProjectDir } from "../src/transcript";
 import { DEFAULT_DENY_METHODS, type GatewayConfig } from "../src/config";
 import { createGateway, installedAgentKinds } from "../src/gateway";
 import { KeepAwake } from "../src/awake";
@@ -48,6 +49,10 @@ const fakeHerdr = Bun.listen<{ buf: string }>({
           return;
         case "pane.read":
           reply({ id: req.id, result: { type: "pane_read", read: { pane_id: req.params.pane_id, text: paneText, revision: 0, format: req.params.format, source: req.params.source } } });
+          s.end();
+          return;
+        case "pane.get":
+          reply({ id: req.id, result: { type: "pane", pane: { pane_id: req.params.pane_id, agent: "claude", cwd: "/w/proj", terminal_title_stripped: "Charts" } } });
           s.end();
           return;
         case "session.snapshot":
@@ -107,7 +112,7 @@ const fitLog = join(dir, "fit.log");
 const herdrBin = join(dir, "herdr");
 writeFileSync(herdrBin, `#!/bin/sh\necho "$*" >> "${fitLog}"\ncat >> "${fitLog}"\necho EOF >> "${fitLog}"\n`);
 chmodSync(herdrBin, 0o755);
-const gw = createGateway({ config, herdr, uploads, herdrBin, push: { devices, notifier } });
+const gw = createGateway({ config, herdr, uploads, herdrBin, claudeHome: dir, push: { devices, notifier } });
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: gw.fetch, websocket: gw.websocket });
 const wsUrl = `ws://127.0.0.1:${server.port}/ws`;
 
@@ -280,6 +285,35 @@ describe("pane watch", () => {
       "EOF",
     ]);
     c.close();
+  });
+});
+
+describe("claude transcript on a watch", () => {
+  test("sends the session's tail, then each new block, and pages back", async () => {
+    const proj = claudeProjectDir("/w/proj", dir);
+    mkdirSync(proj, { recursive: true });
+    const file = join(proj, "s.jsonl");
+    const say = (uuid: string, text: string) =>
+      JSON.stringify({ type: "assistant", uuid, message: { content: [{ type: "text", text }] } }) + "\n";
+    writeFileSync(file, say("a1", "first") + say("a2", "second"));
+    const c = new Client();
+    await c.open();
+    try {
+      c.send({ id: "w", method: "gw.watch_pane", params: { pane_id: "w1:p1", interval_ms: 50, idle_interval_ms: 50, transcript_lines: 1 } });
+      const { result } = await c.next((m) => m.id === "w");
+      expect(result.transcript).toBe(true);
+      const first = await c.next((m) => m.transcript);
+      expect(first.transcript).toEqual({ reset: true, blocks: [{ id: "a2:0", lines: ["⏺ second"] }], start: false });
+
+      appendFileSync(file, say("a3", "third"));
+      const next = await c.next((m) => m.transcript, 3000);
+      expect(next.transcript).toEqual({ blocks: [{ id: "a3:0", lines: ["⏺ third"] }] });
+
+      c.send({ id: "b", method: "gw.transcript_before", params: { watch: result.watch, before: "a2:0", lines: 50 } });
+      expect((await c.next((m) => m.id === "b")).result).toEqual({ type: "transcript", blocks: [{ id: "a1:0", lines: ["⏺ first"] }], start: true });
+    } finally {
+      c.close();
+    }
   });
 });
 

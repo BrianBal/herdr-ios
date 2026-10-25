@@ -104,6 +104,21 @@ pane's title, else the newest) and renders it like Claude's screen: prompts,
 replies with Markdown as terminal styling, one-line tool calls. Thinking,
 tool output and subagent traffic are left out. Only the last 8 MB is read.
 
+A watch can follow the session as it grows: add `"transcript_lines": 1000`
+to `gw.watch_pane` (`watch_started` then says `"transcript": true`). The watch
+sends the session's last blocks, at least that many lines, and then each
+block Claude appends, about once a second:
+```json
+← {"watch":"wt1","transcript":{"reset":true,"blocks":[{"id":"<uuid>:0","lines":["⏺ ..."]}],"start":false}}
+← {"watch":"wt1","transcript":{"blocks":[...]}}
+```
+`reset` replaces what the client has. It is sent at the start, and again
+when the pane moves to another session (for example after `/clear`). `start`
+means nothing older exists. Page back with
+`gw.transcript_before {watch, before: <block id>, lines}`. The app joins the
+blocks to the screen by message, so the screen is shown only from its first
+message that's already in the transcript.
+
 ## Shell completion
 
 `gw.complete {pane_id, line}` returns `{word, candidates}` for the last word of

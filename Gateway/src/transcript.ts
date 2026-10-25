@@ -12,8 +12,8 @@ const TITLE_PROBE_BYTES = 256 * 1024;
 const TAIL_BYTES = 8 * 1024 * 1024;
 const MAX_CANDIDATES = 20;
 
-export function claudeProjectDir(cwd: string, home = homedir()): string {
-  return join(home, ".claude", "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
+export function claudeProjectDir(cwd: string, home?: string): string {
+  return join(home ?? homedir(), ".claude", "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
 }
 
 /** The last `bytes` of a file, starting at a line boundary. */
@@ -48,7 +48,7 @@ function lastTitle(jsonl: string): string | undefined {
  * The session file for a pane: the one whose latest title matches the pane's
  * terminal title (Claude sets both), else the most recently written.
  */
-export function findClaudeSession(cwd: string, title: string | undefined, home = homedir()): string | undefined {
+export function findClaudeSession(cwd: string, title: string | undefined, home?: string): string | undefined {
   const dir = claudeProjectDir(cwd, home);
   let files: { path: string; mtime: number }[];
   try {
@@ -110,50 +110,132 @@ function block(marker: string, text: string): string[] {
   return lines.map((l, i) => (i === 0 ? `${marker} ${l}` : l ? `  ${l}` : ""));
 }
 
+/** One thing Claude showed: a prompt, a reply or a tool call. `id` is stable across reads. */
+export interface TranscriptBlock {
+  id: string;
+  lines: string[];
+}
+
+/** The blocks one JSONL entry adds, if any. */
+export function renderEntry(line: string): TranscriptBlock[] {
+  if (!line.trim()) return [];
+  let o: any;
+  try {
+    o = JSON.parse(line);
+  } catch {
+    return [];
+  }
+  if (o.isSidechain || o.isMeta) return [];
+  const content = o.message?.content;
+  const id = (i: number) => `${o.uuid ?? Bun.hash(line).toString(36)}:${i}`;
+  if (o.type === "user") {
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n")
+          : "";
+    // Slash-command plumbing and system reminders aren't things you typed.
+    if (!text.trim() || text.trimStart().startsWith("<")) return [];
+    return [{ id: id(0), lines: block("❯", text) }];
+  }
+  if (o.type !== "assistant" || !Array.isArray(content)) return [];
+  const out: TranscriptBlock[] = [];
+  content.forEach((c: any, i: number) => {
+    if (c?.type === "text" && c.text?.trim()) out.push({ id: id(i), lines: block("⏺", markdownToAnsi(c.text)) });
+    else if (c?.type === "tool_use") out.push({ id: id(i), lines: [`⏺ ${toolSummary(c.name, c.input)}`] });
+  });
+  return out;
+}
+
+/** Blocks as one screen of text, a blank line between them. */
+export function joinBlocks(blocks: TranscriptBlock[]): string[] {
+  const out: string[] = [];
+  for (const b of blocks) {
+    if (out.length) out.push("");
+    out.push(...b.lines);
+  }
+  return out;
+}
+
 /**
  * Renders a session as Claude shows it: your prompts (❯), replies (⏺) and
  * one-line tool calls; thinking, tool output and subagent traffic are left out.
  */
 export function renderClaudeTranscript(jsonl: string): string[] {
-  const out: string[] = [];
-  const push = (lines: string[]) => {
-    if (out.length && out[out.length - 1] !== "") out.push("");
-    out.push(...lines);
-  };
-  for (const line of jsonl.split("\n")) {
-    if (!line.trim()) continue;
-    let o: any;
-    try {
-      o = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (o.isSidechain || o.isMeta) continue;
-    const content = o.message?.content;
-    if (o.type === "user") {
-      const text =
-        typeof content === "string"
-          ? content
-          : Array.isArray(content)
-            ? content.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("\n")
-            : "";
-      // Slash-command plumbing and system reminders aren't things you typed.
-      if (!text.trim() || text.trimStart().startsWith("<")) continue;
-      push(block("❯", text));
-    } else if (o.type === "assistant" && Array.isArray(content)) {
-      for (const c of content) {
-        if (c?.type === "text" && c.text?.trim()) push(block("⏺", markdownToAnsi(c.text)));
-        else if (c?.type === "tool_use") push([`⏺ ${toolSummary(c.name, c.input)}`]);
-      }
-    }
-  }
-  return out;
+  return joinBlocks(jsonl.split("\n").flatMap(renderEntry));
 }
 
 /** The pane's Claude session as screen-like text, last `maxLines` lines. */
-export function claudeTranscript(cwd: string, title: string | undefined, maxLines: number, home = homedir()) {
+export function claudeTranscript(cwd: string, title: string | undefined, maxLines: number, home?: string) {
   const file = findClaudeSession(cwd, title, home);
   if (!file) return undefined;
   const lines = renderClaudeTranscript(readTail(file, TAIL_BYTES));
   return { text: lines.slice(-maxLines).join("\n"), truncated: lines.length > maxLines, file };
+}
+
+/**
+ * Follows one session file as Claude appends to it: the last 8 MB to start
+ * with, then whatever was added since the previous `poll()`.
+ */
+export class TranscriptFollower {
+  readonly blocks: TranscriptBlock[] = [];
+  /** True when the file had more than we read at the start. */
+  readonly clipped: boolean;
+  private offset: number;
+  private partial = "";
+
+  constructor(readonly path: string) {
+    const size = statSync(path).size;
+    this.clipped = size > TAIL_BYTES;
+    this.offset = Math.max(0, size - TAIL_BYTES);
+    this.read(size, this.offset > 0);
+  }
+
+  /** New blocks since the last call; null when the file shrank (rewritten), so start over. */
+  poll(): TranscriptBlock[] | null {
+    let size: number;
+    try {
+      size = statSync(this.path).size;
+    } catch {
+      return null;
+    }
+    if (size < this.offset) return null;
+    if (size === this.offset) return [];
+    return this.read(size, false);
+  }
+
+  private read(size: number, skipFirstLine: boolean): TranscriptBlock[] {
+    const fd = openSync(this.path, "r");
+    let text: string;
+    try {
+      const buf = Buffer.alloc(size - this.offset);
+      readSync(fd, buf, 0, buf.length, this.offset);
+      text = buf.toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+    this.offset = size;
+    if (skipFirstLine) text = text.slice(text.indexOf("\n") + 1);
+    const lines = (this.partial + text).split("\n");
+    // The last line may still be being written.
+    this.partial = lines.pop() ?? "";
+    const added = lines.flatMap(renderEntry);
+    this.blocks.push(...added);
+    return added;
+  }
+
+  /** The last blocks holding at least `lines` lines, ending before `before` (an id) if given. */
+  tail(lines: number, before?: string): { blocks: TranscriptBlock[]; start: boolean } {
+    let end = this.blocks.length;
+    if (before !== undefined) {
+      // Not ours (the pane moved to another session): nothing older to give.
+      end = this.blocks.findIndex((b) => b.id === before);
+      if (end < 0) return { blocks: [], start: true };
+    }
+    let begin = end;
+    let n = 0;
+    while (begin > 0 && n < lines) n += this.blocks[--begin].lines.length + 1;
+    return { blocks: this.blocks.slice(begin, end), start: begin === 0 && !this.clipped };
+  }
 }

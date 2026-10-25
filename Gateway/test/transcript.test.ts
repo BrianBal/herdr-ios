@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeProjectDir, claudeTranscript, findClaudeSession, markdownToAnsi, renderClaudeTranscript } from "../src/transcript";
+import {
+  claudeProjectDir, claudeTranscript, findClaudeSession, markdownToAnsi, renderClaudeTranscript, TranscriptFollower,
+} from "../src/transcript";
 
 const j = (o: unknown) => JSON.stringify(o);
 const session = [
@@ -59,5 +61,31 @@ describe("claude transcript", () => {
     expect(t.text.split("\n")).toEqual(["  - b", "", "⏺ Bash(bun test --watch)"]);
     expect(t.truncated).toBe(true);
     rmSync(home, { recursive: true, force: true });
+  });
+
+  test("follows the session as Claude appends to it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude-follow-"));
+    const file = join(dir, "s.jsonl");
+    const say = (uuid: string, text: string) => j({ type: "assistant", uuid, message: { content: [{ type: "text", text }] } });
+    writeFileSync(file, [j({ type: "user", uuid: "u1", message: { content: "hi" } }), say("a1", "one\ntwo"), ""].join("\n"));
+    const f = new TranscriptFollower(file);
+    expect(f.blocks.map((b) => b.id)).toEqual(["u1:0", "a1:0"]);
+    expect(f.poll()).toEqual([]);
+
+    // A line arrives in two writes: nothing until it's whole.
+    const line = say("a2", "three");
+    appendFileSync(file, line.slice(0, 10));
+    expect(f.poll()).toEqual([]);
+    appendFileSync(file, line.slice(10) + "\n");
+    expect(f.poll()).toEqual([{ id: "a2:0", lines: ["⏺ three"] }]);
+
+    // Paging: the last blocks holding at least n lines, optionally before an id.
+    expect(f.tail(1)).toEqual({ blocks: [{ id: "a2:0", lines: ["⏺ three"] }], start: false });
+    expect(f.tail(100, "a2:0").blocks.map((b) => b.id)).toEqual(["u1:0", "a1:0"]);
+    expect(f.tail(100, "a2:0").start).toBe(true);
+
+    writeFileSync(file, "");
+    expect(f.poll()).toBeNull();
+    rmSync(dir, { recursive: true, force: true });
   });
 });
