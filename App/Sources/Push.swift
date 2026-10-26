@@ -97,7 +97,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         app.push.didRegister(token: deviceToken)
-        app.store.registerPush(token: app.push.deviceToken)
+        app.registerPush(token: app.push.deviceToken)
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {

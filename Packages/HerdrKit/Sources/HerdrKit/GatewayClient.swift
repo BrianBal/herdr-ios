@@ -164,6 +164,33 @@ public actor GatewayClient {
         return r.kinds
     }
 
+    /// What each pane shows right now (ANSI), for previews: one read each,
+    /// nothing watched or resized. Gateways without `gw.screens` get a
+    /// `pane.read` per pane instead. Panes that can't be read are left out.
+    public func screens(_ paneIds: [String], rows: Int = 40) async throws -> [String: String] {
+        guard !paneIds.isEmpty else { return [:] }
+        do {
+            let r: ScreensResult = try await call("gw.screens", params: [
+                "panes": .array(paneIds.map { .string($0) }), "rows": .number(Double(rows)),
+            ], timeout: 10)
+            return Dictionary(r.screens.map { ($0.paneId, $0.text) }, uniquingKeysWith: { a, _ in a })
+        } catch GatewayError.server(code: "unknown_method", _) {
+            var out: [String: String] = [:]
+            await withTaskGroup(of: (String, String?).self) { group in
+                for id in paneIds {
+                    group.addTask {
+                        let r: PaneReadResult? = try? await self.call("pane.read", params: [
+                            "pane_id": .string(id), "source": "visible", "format": "ansi", "strip_ansi": false,
+                        ], timeout: 10)
+                        return (id, r?.read.text)
+                    }
+                }
+                for await (id, text) in group { if let text { out[id] = text } }
+            }
+            return out
+        }
+    }
+
     /// Tab completion for a shell pane's command line, from the gateway's machine.
     public func complete(paneId: String, line: String) async throws -> ShellCompletions {
         try await call("gw.complete", params: ["pane_id": .string(paneId), "line": .string(line)], timeout: 5)
@@ -444,6 +471,14 @@ private struct AgentKindsResult: Decodable, Sendable {
 private struct TranscriptResult: Decodable, Sendable {
     let text: String
     let truncated: Bool
+}
+
+private struct ScreensResult: Decodable, Sendable {
+    struct Screen: Decodable, Sendable {
+        let paneId: String
+        let text: String
+    }
+    let screens: [Screen]
 }
 
 private struct PaneReadResult: Decodable, Sendable {

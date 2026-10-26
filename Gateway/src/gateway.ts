@@ -27,9 +27,19 @@ import { complete, looksRemote } from "./complete";
 import { UploadError, type Uploads } from "./uploads";
 import { fitSize, PaneFit } from "./fit";
 
+/** The last `n` rows of a rendered screen, without the blank rows below the output. */
+export function lastRows(text: string, n: number): string {
+  const rows = text.split("\r\n");
+  const blank = (r: string) => r.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim() === "";
+  while (rows.length && blank(rows[rows.length - 1])) rows.pop();
+  return rows.slice(-n).join("\r\n");
+}
+
 export const GATEWAY_VERSION = "0.1.0";
 const MAX_INFLIGHT = 64;
 const MAX_WATCHES = 8;
+/** Panes one gw.screens call reads. */
+const MAX_SCREENS = 32;
 const MAX_SUBSCRIPTIONS = 16;
 const BACKPRESSURE_BYTES = 2 * 1024 * 1024;
 /** How often a watch checks Claude's session file for new messages. */
@@ -439,6 +449,26 @@ export function createGateway({ config, herdr, push, uploads, herdrBin, claudeHo
         } catch (e: any) {
           send(ws, errorMsg(id, "gateway_error", e.message));
         }
+        return;
+      }
+      case "gw.screens": {
+        // What each pane shows right now, for previews: the last `rows` rows of
+        // its visible screen (trailing blank rows dropped). Read only, so no
+        // pane is resized; one pane.read each, in parallel.
+        const panes: string[] = Array.isArray(params?.panes)
+          ? params.panes.filter((p: unknown) => typeof p === "string").slice(0, MAX_SCREENS)
+          : [];
+        const rows = Math.min(200, Math.max(1, Number(params?.rows) || 40));
+        const read = await Promise.all(panes.map(async (pane_id) => {
+          try {
+            const res = await herdr.call("pane.read", { pane_id, source: "visible", format: "ansi", strip_ansi: false }, 5000);
+            const text = res.result?.read?.text;
+            return typeof text === "string" ? { pane_id, text: lastRows(text, rows) } : null;
+          } catch {
+            return null;
+          }
+        }));
+        send(ws, { id, result: { type: "screens", screens: read.filter((s) => s) } });
         return;
       }
       case "gw.unwatch_pane": {

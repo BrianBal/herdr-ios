@@ -1,134 +1,124 @@
 import HerdrKit
 import SwiftUI
 
-enum Route: Hashable {
-    /// A workspace, optionally opened at a specific pane.
-    case workspace(String, pane: String?)
+/// A workspace on one of the paired machines, optionally opened at a pane.
+struct Route: Hashable {
+    var gatewayId: String
+    var workspaceId: String
+    var paneId: String?
 
-    var workspaceId: String {
-        switch self { case .workspace(let id, _): id }
-    }
-
-    var paneId: String? {
-        switch self { case .workspace(_, let pane): pane }
-    }
+    var tab: TabKey { TabKey(gatewayId: gatewayId, workspaceId: workspaceId) }
 }
 
-/// Compact width (iPhone, iPhone Duo folded): a navigation stack with the
-/// agents panel as a sheet. Regular width (iPad, iPhone Duo unfolded): a
-/// sidebar with workspaces and agents beside the open workspace.
-///
-/// Both layouts share the open workspace and focused split, so folding or
-/// unfolding (a live resize of the same scene) keeps your place.
+/// One layout on every device, like Safari: the tabs overview (every
+/// workspace on every machine), and the open workspace full screen over it.
+/// Only the workspace's tabs button goes back: no drag gesture competes with
+/// the terminal's (scrolling, putting the keyboard away, swiping panes).
+/// Folding or unfolding the Duo (a live resize of the same scene) keeps the
+/// open workspace and focused split.
 struct RootView: View {
     @Environment(AppModel.self) private var app
-    @Environment(HerdrStore.self) private var store
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var route: Route?
+    /// The last workspace opened, which the overview's Done goes back to.
+    @State private var lastRoute: Route?
     @State private var selectedPaneId: String?
-    @State private var showAgents = false
-    @State private var columns = NavigationSplitViewVisibility.automatic
     @State private var landscape = false
 
     var body: some View {
         Group {
-            if app.endpoint == nil {
+            if app.gateways.isEmpty {
                 PairView()
-            } else if sizeClass == .regular {
-                regular
             } else {
-                compact
+                stack
             }
         }
         .onAppear { app.resume() }
-        .task(id: store.isConnected) {
+        .task(id: app.orderedStores.contains(where: \.isConnected)) {
             // Ask for notifications the first time a gateway is actually reachable.
-            if store.isConnected { await app.push.requestAuthorizationIfFirstTime() }
+            if app.orderedStores.contains(where: \.isConnected) { await app.push.requestAuthorizationIfFirstTime() }
         }
         .onChange(of: route) { _, route in
             selectedPaneId = route?.paneId
-            // Picking a workspace in portrait slides the sidebar away; say so, so
-            // the Workspaces button's next tap opens it rather than "closing" it.
-            if route != nil, sizeClass == .regular, !landscape, columns != .detailOnly { columns = .detailOnly }
+            if let route { lastRoute = route }
         }
-        // Workspace ids repeat across machines (both have a w1), so start over.
-        .onChange(of: app.activeId) { route = nil }
-        .onChange(of: store.snapshot?.workspaces.map(\.workspaceId)) { _, ids in
-            // The open workspace was closed (here or on the Mac): back to the list.
-            if let ids, let route, !ids.contains(route.workspaceId) { self.route = nil }
+        .onChange(of: openWorkspaceIds) { _, ids in
+            // The open workspace was closed (here or on the Mac), or its machine removed: back to the tabs.
+            guard let route else { return }
+            if app.store(route.gatewayId) == nil || ids.map({ !$0.contains(route.workspaceId) }) == true {
+                self.route = nil
+                lastRoute = nil
+            }
         }
-        .onChange(of: PendingOpen(paneId: app.pendingPaneId, ready: store.snapshot != nil)) { _, pending in
-            guard pending.ready, let id = pending.paneId else { return }
-            app.pendingPaneId = nil
-            showAgents = false
-            if let pane = store.snapshot?.pane(id) {
-                route = .workspace(pane.workspaceId, pane: pane.paneId)
+        .onChange(of: PendingKey(request: app.pendingOpen, ready: pendingStore?.snapshot != nil)) { _, pending in
+            guard pending.ready, let request = pending.request, let store = pendingStore else { return }
+            app.pendingOpen = nil
+            if let pane = store.snapshot?.pane(request.paneId) {
+                route = Route(gatewayId: store.gatewayId, workspaceId: pane.workspaceId, paneId: pane.paneId)
             }
         }
         .alert("Action failed", isPresented: Binding(
-            get: { store.actionError != nil }, set: { if !$0 { store.actionError = nil } })
+            get: { failing != nil }, set: { if !$0 { failing?.actionError = nil } })
         ) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text(store.actionError ?? "")
+            Text(failing?.actionError ?? "")
         }
     }
 
-    private var compact: some View {
-        NavigationStack(path: Binding(get: { route.map { [$0] } ?? [] }, set: { route = $0.last })) {
-            HomeView(showAgents: $showAgents, open: { route = $0 })
-                .navigationDestination(for: Route.self) { route in
-                    WorkspaceView(workspaceId: route.workspaceId, selectedPaneId: $selectedPaneId, showAgents: $showAgents)
+    private var stack: some View {
+        ZStack {
+            // Not kept under the open workspace, where VoiceOver and keyboard
+            // focus would still reach its cards.
+            if route == nil {
+                NavigationStack {
+                    TabsView(current: lastRoute) { open in
+                        withAnimation(Self.motion) { route = open }
+                    }
                 }
-        }
-        .sheet(isPresented: $showAgents) {
-            AgentsSheet { agent in
-                showAgents = false
-                route = .workspace(agent.workspaceId, pane: agent.paneId)
+                .transition(.opacity)
             }
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
-            .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-        }
-    }
-
-    private var regular: some View {
-        NavigationSplitView(columnVisibility: $columns) {
-            HomeView(showAgents: $showAgents, sidebarSelection: $route, open: { route = $0 })
-                .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 360)
-        } detail: {
-            NavigationStack {
-                if let route {
-                    WorkspaceView(workspaceId: route.workspaceId, selectedPaneId: $selectedPaneId, showAgents: $showAgents)
-                        .id(route.workspaceId)
-                        .environment(\.toggleSidebar) {
-                            // .automatic shows the sidebar beside the detail in landscape only.
-                            let shown = columns == .automatic ? landscape : columns != .detailOnly
-                            withAnimation { columns = shown ? .detailOnly : .all }
-                        }
-                } else {
-                    ContentUnavailableView("Pick a workspace", systemImage: "sidebar.left",
-                                           description: Text("Or an agent that needs you."))
+            if let route, let store = app.store(route.gatewayId) {
+                NavigationStack {
+                    WorkspaceView(workspaceId: route.workspaceId, selectedPaneId: $selectedPaneId)
+                        .environment(store)
+                        .environment(\.showTabs) { withAnimation(Self.motion) { self.route = nil } }
                 }
+                .id(route.tab)
+                .background(TerminalRenderer.background.ignoresSafeArea())
+                .transition(.scale(scale: 0.86).combined(with: .opacity))
+                .zIndex(1)
             }
         }
-        // Terminals need the width: in portrait the sidebar slides over instead of squeezing them.
-        .navigationSplitViewStyle(.prominentDetail)
         .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { landscape = $0 }
-        // The unfolded Duo in portrait: the status bar is a band across the top,
-        // lines lost over a terminal. In landscape it sits in the side column.
-        // (Set here: the detail column's own preference doesn't reach the window.)
+        // A phone in portrait: the status bar is a band across the top, lines
+        // lost over a terminal. In landscape it sits in the side column.
         .statusBarHidden(UIDevice.current.userInterfaceIdiom == .phone && route != nil && !landscape)
     }
+
+    /// Opening a tab and going back to the tabs.
+    private static let motion = Animation.snappy(duration: 0.3)
+
+    /// The open workspace's machine's workspaces (nil while it has no snapshot).
+    private var openWorkspaceIds: [String]? {
+        route.flatMap { app.store($0.gatewayId)?.snapshot?.workspaces.map(\.workspaceId) }
+    }
+
+    /// The machine a pending pane request is for: its own, else the primary (widget links).
+    private var pendingStore: HerdrStore? {
+        guard let request = app.pendingOpen else { return nil }
+        return (request.gatewayId ?? app.primaryId).flatMap(app.store)
+    }
+
+    /// A store whose last action failed, to say so.
+    private var failing: HerdrStore? { app.orderedStores.first { $0.actionError != nil } }
 }
 
 extension EnvironmentValues {
-    /// Shows or hides the workspace sidebar, for views that hide the
-    /// navigation bar its own button lives in.
-    @Entry var toggleSidebar: (() -> Void)? = nil
+    /// Goes back to the tabs overview from the open workspace.
+    @Entry var showTabs: (() -> Void)? = nil
 }
 
-private struct PendingOpen: Equatable {
-    let paneId: String?
+private struct PendingKey: Equatable {
+    let request: PaneRequest?
     let ready: Bool
 }

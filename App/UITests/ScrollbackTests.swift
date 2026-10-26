@@ -47,7 +47,9 @@ final class ScrollbackTests: XCTestCase {
         }
     }
 
-    /// Claude Code pane: earlier output comes from Claude's session transcript.
+    /// Claude Code pane: earlier output comes from Claude's session file, in
+    /// runs with gaps that fill as they scroll into view. HERDR_CLAUDE_WORKSPACE
+    /// names a workspace whose pane runs Claude.
     @MainActor
     func testClaudeTranscript() throws {
         let env = ProcessInfo.processInfo.environment
@@ -57,16 +59,18 @@ final class ScrollbackTests: XCTestCase {
         let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow"]
         if allow.waitForExistence(timeout: 8) { allow.tap() }
 
-        let row = app.buttons.containing(NSPredicate(format: "label CONTAINS %@", env["HERDR_CLAUDE_WORKSPACE"] ?? "TraceBot, 1 tab")).firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 15))
-        row.tap()
-        let load = app.buttons["Load earlier output"]
-        let live = app.staticTexts["Live"]
-        for _ in 0..<12 where !load.isHittable && !live.exists { app.swipeDown(velocity: .fast) }
-        if !live.exists, load.isHittable { load.tap() }
-        XCTAssertTrue(live.waitForExistence(timeout: 15), "transcript didn't load")
+        let card = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", env["HERDR_CLAUDE_WORKSPACE"] ?? "dragon")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 15))
+        card.tap()
+        let output = app.scrollViews["pane-output"].firstMatch
+        XCTAssertTrue(output.waitForExistence(timeout: 10))
+        // History above the live screen: a gap that loads as it comes into view,
+        // or (a short session) the start of it.
+        let history = NSPredicate(format: "label IN %@", ["Earlier messages", "Loading earlier messages", "Start of available output"])
+        let marker = app.descendants(matching: .any).matching(history).firstMatch
+        for _ in 0..<15 where !marker.exists { output.swipeDown(velocity: .fast) }
+        XCTAssertTrue(marker.waitForExistence(timeout: 10), "no history above the screen")
         XCTAssertFalse(app.staticTexts["No earlier output"].exists)
-        for _ in 0..<2 { app.swipeDown() }
         save(app, "claude-transcript")
     }
 }

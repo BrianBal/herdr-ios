@@ -4,8 +4,9 @@ import Observation
 import UIKit
 import WidgetKit
 
-/// Live mirror of one herdr session through the gateway. Owns the reconnect
-/// loop; views read `snapshot` and call the action methods.
+/// Live mirror of one machine's herdr session through its gateway. Owns the
+/// reconnect loop; views read `snapshot` and call the action methods. The app
+/// keeps one per paired gateway, all connected at once.
 ///
 /// Freshness: a topology subscription and per-pane agent-status subscriptions
 /// trigger a debounced `session.snapshot` refetch (it's ~1 ms on the server),
@@ -20,7 +21,11 @@ final class HerdrStore {
         case unauthorized(String)
     }
 
+    /// The SavedGateway this mirrors.
+    let gatewayId: String
     private(set) var phase: Phase = .idle
+    /// When the snapshot last came in; what an offline machine's "last seen" says.
+    private(set) var lastSeen: Date?
     private(set) var snapshot: SessionSnapshot?
     private(set) var info: GatewayInfo?
     private(set) var endpoint: GatewayEndpoint?
@@ -53,6 +58,23 @@ final class HerdrStore {
     ]
 
     var isConnected: Bool { phase == .connected }
+
+    /// Can't reach the machine right now (retrying, or the token was refused).
+    var isOffline: Bool {
+        switch phase {
+        case .waiting, .unauthorized: true
+        case .idle, .connecting, .connected: false
+        }
+    }
+
+    /// Updates the widget and Live Activity (see AppModel).
+    var isPrimary = false {
+        didSet { if isPrimary != oldValue { lastBoard = nil } }
+    }
+
+    init(gatewayId: String) {
+        self.gatewayId = gatewayId
+    }
 
     /// Each pane's terminal (screen, history, transcript), most recently
     /// opened last; kept across swipes, folds and reconnects.
@@ -93,6 +115,9 @@ final class HerdrStore {
         terminals = [:]
         terminalOrder = []
         snapshot = nil
+        lastSeen = nil
+        previews = [:]
+        lastPanes = [:]
         latency = nil
         info = nil
         endpoint = nil
@@ -162,6 +187,7 @@ final class HerdrStore {
         let s = try await c.snapshot()
         latency = ContinuousClock.now - started
         snapshot = s
+        lastSeen = .now
         publishBoard(s)
         updateAgentStatusSubscription(c, panes: Set(s.panes.map(\.paneId)))
     }
@@ -221,6 +247,46 @@ final class HerdrStore {
         if let i = s.agents.firstIndex(where: { $0.paneId == paneId }) { s.agents[i].agentStatus = status }
         snapshot = s
     }
+
+    // MARK: Previews
+
+    /// Each pane's screen (ANSI) as last read for the tabs overview, kept when
+    /// the machine goes offline.
+    private(set) var previews: [String: String] = [:]
+    /// The pane last on screen in each workspace, which its card shows.
+    @ObservationIgnored private var lastPanes: [String: String] = [:]
+
+    func noteVisible(paneId: String, in workspaceId: String) {
+        lastPanes[workspaceId] = paneId
+    }
+
+    /// Leaving a pane: its card shows the screen as you last saw it until the
+    /// overview's next read.
+    func keepPreview(of paneId: String) {
+        if let text = terminals[paneId]?.screenText, !text.isEmpty { previews[paneId] = text }
+    }
+
+    /// The pane a workspace's card shows: the one you last looked at, else
+    /// the one herdr has focused in its active tab.
+    func previewPane(of workspaceId: String) -> String? {
+        guard let s = snapshot else { return nil }
+        if let id = lastPanes[workspaceId], s.pane(id)?.workspaceId == workspaceId { return id }
+        guard let ws = s.workspace(workspaceId) else { return nil }
+        let panes = s.panes(in: ws.activeTabId)
+        let focused = s.layouts.first { $0.tabId == ws.activeTabId }?.focusedPaneId
+        return (panes.first { $0.paneId == focused } ?? panes.first ?? s.panes.first { $0.workspaceId == workspaceId })?.paneId
+    }
+
+    /// Reads every card's pane once.
+    func refreshPreviews() async {
+        guard let client, isConnected, let s = snapshot else { return }
+        let panes = s.sortedWorkspaces.compactMap { previewPane(of: $0.workspaceId) }
+        guard let screens = try? await client.screens(panes, rows: Self.previewRows) else { return }
+        for (id, text) in screens where previews[id] != text { previews[id] = text }
+    }
+
+    /// Enough rows for a card at its smallest legible size.
+    static let previewRows = 36
 
     // MARK: Actions
 
@@ -323,14 +389,22 @@ final class HerdrStore {
         pushProblem = r?.problem
     }
 
-    /// Saves the board for the widget and tells it and the Live Activity, when it changed.
+    /// Saves the board for the widget and tells it and the Live Activity, when
+    /// it changed. Only the primary machine's: the widget shows one.
     private func publishBoard(_ s: SessionSnapshot) {
+        guard isPrimary else { return }
         let board = AgentBoard(snapshot: s)
         guard board.rows != lastBoard?.rows else { return }
         lastBoard = board
         board.save()
         WidgetCenter.shared.reloadTimelines(ofKind: "Agents")
         onBoard?(board)
+    }
+
+    /// Publishes the current board again (this store just became the primary).
+    func republishBoard() {
+        lastBoard = nil
+        if let snapshot { publishBoard(snapshot) }
     }
 
     /// Why the gateway can't send pushes yet (e.g. no APNs key installed), if it said.

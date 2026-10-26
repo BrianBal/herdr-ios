@@ -3,7 +3,6 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var app
-    @Environment(HerdrStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @AppStorage("terminal.fontSize") private var fontSize = 11.0
     @AppStorage("terminal.wrap") private var wrap = true
@@ -18,16 +17,6 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 gatewaysSection
-                Section(app.activeGateway.map { "Connected gateway · \($0.name)" } ?? "Connected gateway") {
-                    LabeledContent("Signed in as", value: store.info?.user ?? "local")
-                    LabeledContent("Status", value: statusText)
-                    if let info = store.info {
-                        LabeledContent("Gateway", value: info.gatewayVersion)
-                        if let herdr = info.herdr {
-                            LabeledContent("herdr", value: "\(herdr.version) (protocol \(herdr.protocol))")
-                        }
-                    }
-                }
                 notificationsSection
                 liveActivitySection
                 Section {
@@ -67,13 +56,16 @@ struct SettingsView: View {
         }
     }
 
+    /// Notifications, the Live Activity and the widget go through the primary machine.
+    private var store: HerdrStore? { app.primaryStore }
+
     private var gatewaysSection: some View {
         Section {
             ForEach(app.gateways) { g in
                 NavigationLink {
                     GatewayEditView(gateway: g, onRemove: { removing = g })
                 } label: {
-                    GatewayRow(gateway: g, active: g.id == app.activeId)
+                    GatewayRow(gateway: g, store: app.store(g.id), primary: g.id == app.primaryId && app.gateways.count > 1)
                 }
                 .swipeActions {
                     Button("Remove", role: .destructive) { removing = g }
@@ -83,9 +75,9 @@ struct SettingsView: View {
                 Label("Add gateway", systemImage: "plus")
             }
         } header: {
-            Text("Gateways")
+            Text("Machines")
         } footer: {
-            Text("One herdr per gateway, each with its own pairing code. The app shows one at a time; switch from the title on the home screen. They all send notifications.")
+            Text("One herdr per machine, each with its own gateway and pairing code. The app stays connected to all of them, and they all send notifications. The Live Activity and widget show one machine's agents, marked with a star.")
         }
     }
 
@@ -96,7 +88,7 @@ struct SettingsView: View {
             switch push.authorization {
             case .authorized, .provisional, .ephemeral:
                 LabeledContent("Notifications", value: push.deviceToken == nil ? "Registering…" : "On")
-                if let problem = store.pushProblem {
+                if let problem = store?.pushProblem {
                     Label(problem, systemImage: "exclamationmark.triangle")
                         .font(.footnote)
                         .foregroundStyle(.red)
@@ -104,7 +96,7 @@ struct SettingsView: View {
                 Button {
                     testing = true
                     Task {
-                        testResult = await store.sendTestPush() ?? "Sent — it should arrive in a moment."
+                        testResult = await store?.sendTestPush() ?? "Sent — it should arrive in a moment."
                         testing = false
                     }
                 } label: {
@@ -113,7 +105,7 @@ struct SettingsView: View {
                         if testing { Spacer(); ProgressView() }
                     }
                 }
-                .disabled(testing || !store.isConnected || push.deviceToken == nil)
+                .disabled(testing || store?.isConnected != true || push.deviceToken == nil)
                 if let testResult {
                     Text(testResult).font(.footnote).foregroundStyle(.secondary)
                 }
@@ -153,9 +145,9 @@ struct SettingsView: View {
                     Button("End now", role: .destructive) { Task { await live.endNow() } }
                 } else {
                     Button("Start now") {
-                        if let s = store.snapshot { Task { await live.startNow(AgentBoard(snapshot: s)) } }
+                        if let s = store?.snapshot { Task { await live.startNow(AgentBoard(snapshot: s)) } }
                     }
-                    .disabled(store.snapshot == nil)
+                    .disabled(store?.snapshot == nil)
                 }
             }
         } header: {
@@ -165,11 +157,14 @@ struct SettingsView: View {
         }
     }
 
-    private var statusText: String {
-        switch store.phase {
+}
+
+extension HerdrStore.Phase {
+    var label: String {
+        switch self {
         case .connected: "Connected"
         case .connecting: "Connecting…"
-        case .waiting: "Reconnecting"
+        case .waiting: "Offline"
         case .unauthorized: "Rejected"
         case .idle: "Paused"
         }
@@ -178,26 +173,36 @@ struct SettingsView: View {
 
 struct GatewayRow: View {
     let gateway: SavedGateway
-    let active: Bool
+    let store: HerdrStore?
+    /// Drives the Live Activity and widget (only marked with more than one machine).
+    let primary: Bool
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(gateway.name)
+                HStack(spacing: 6) {
+                    Text(gateway.name)
+                    if primary {
+                        Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow)
+                            .accessibilityLabel("Live Activity and widget")
+                    }
+                }
                 Text(gateway.url.host ?? gateway.url.absoluteString)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if active {
-                Image(systemName: "checkmark").foregroundStyle(.tint)
-                    .accessibilityLabel("Connected")
+            if let store {
+                Text(store.phase.label)
+                    .font(.caption)
+                    .foregroundStyle(store.isConnected ? Color.green : store.isOffline ? Color.red : Color.secondary)
             }
         }
     }
 }
 
-/// Rename a gateway, point it at a new URL or token, switch to it, or remove it.
+/// Rename a machine's gateway, point it at a new URL or token, make it the
+/// one the Live Activity and widget show, or remove it.
 struct GatewayEditView: View {
     @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
@@ -239,12 +244,27 @@ struct GatewayEditView: View {
                     Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
                 }
             }
-            if gateway.id != app.activeId {
-                Section {
-                    Button("Connect to this gateway") {
-                        app.switchTo(gateway.id)
-                        dismiss()
+            if let store = app.store(gateway.id) {
+                Section("Status") {
+                    LabeledContent("Status", value: store.phase.label)
+                    LabeledContent("Signed in as", value: store.info?.user ?? "local")
+                    if let info = store.info {
+                        LabeledContent("Gateway", value: info.gatewayVersion)
+                        if let herdr = info.herdr {
+                            LabeledContent("herdr", value: "\(herdr.version) (protocol \(herdr.protocol))")
+                        }
                     }
+                }
+            }
+            if app.gateways.count > 1 {
+                Section {
+                    if gateway.id == app.primaryId {
+                        Label("Shown in the Live Activity and widget", systemImage: "star.fill")
+                    } else {
+                        Button("Show in the Live Activity and widget") { app.makePrimary(gateway.id) }
+                    }
+                } footer: {
+                    Text("They show one machine's agents at a time.")
                 }
             }
             Section {

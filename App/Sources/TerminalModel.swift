@@ -182,6 +182,9 @@ final class TerminalModel {
         return true
     }
 
+    /// The live screen as the gateway sent it (ANSI), for the tabs overview's card.
+    private(set) var screenText = ""
+
     /// Runs until cancelled or the watch ends (socket drop, pane closed).
     /// `agent` is the pane's agent kind: "claude" follows its session file.
     func watch(_ paneId: String, agent: String?, client: GatewayClient) async {
@@ -212,6 +215,7 @@ final class TerminalModel {
                 let parsed = await Task.detached(priority: .userInitiated) { ANSIParser.parse(frame.text) }.value
                 guard activeWatch == token else { return }
                 lines = parsed
+                screenText = frame.text
                 await joinScreen()
                 await rerender()
                 lastFrameAt = .now

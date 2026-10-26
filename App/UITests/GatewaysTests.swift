@@ -2,7 +2,7 @@ import XCTest
 
 /// Settings → Gateways against the live gateway: adds the same gateway a
 /// second time under another URL (a query string it ignores), renames it,
-/// switches between the two from the home title, and removes it.
+/// sees both machines in the tabs overview, and removes it.
 /// HERDR_PAIR_LINK as for HomeSwipeTests.
 final class GatewaysTests: XCTestCase {
     @MainActor
@@ -55,18 +55,13 @@ final class GatewaysTests: XCTestCase {
         XCTAssertTrue(second.waitForExistence(timeout: 10))
         save(app, "gateways-renamed")
 
-        // Switch from the home title.
-        app.buttons["Done"].tap()
-        let title = { (name: String) in app.navigationBars.descendants(matching: .any)[name].firstMatch }
-        XCTAssertTrue(title("Second").waitForExistence(timeout: 5))
-        title("Second").tap()
-        let first = app.buttons[host]
-        XCTAssertTrue(first.waitForExistence(timeout: 5))
-        save(app, "gateways-menu")
-        first.tap()
+        // Both machines in the overview, connected at once, each with its cards.
+        app.navigationBars["Settings"].buttons["Done"].tap()
+        let title = { (name: String) in app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", name)).firstMatch }
+        XCTAssertTrue(title("Second").waitForExistence(timeout: 10))
         XCTAssertTrue(title(host).waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons.containing(NSPredicate(format: "label CONTAINS 'TraceBot'")).firstMatch
-            .waitForExistence(timeout: 15))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'TraceBot'")).count, 2)
+        save(app, "gateways-overview")
 
         // Remove the second by swiping its row.
         app.buttons["Settings"].firstMatch.tap()
@@ -76,7 +71,7 @@ final class GatewaysTests: XCTestCase {
         app.sheets.buttons["Remove"].firstMatch.tap()
         XCTAssertTrue(second.waitForNonExistence(timeout: 5))
         XCTAssertEqual(rows.count, 1)
-        app.buttons["Done"].tap()
+        app.navigationBars["Settings"].buttons["Done"].tap()
         XCTAssertTrue(title(host).waitForExistence(timeout: 5))
     }
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeProjectDir } from "../src/transcript";
 import { DEFAULT_DENY_METHODS, type GatewayConfig } from "../src/config";
-import { createGateway, installedAgentKinds } from "../src/gateway";
+import { createGateway, installedAgentKinds, lastRows } from "../src/gateway";
 import { KeepAwake } from "../src/awake";
 import { Uploads } from "../src/uploads";
 import { HerdrSocket } from "../src/herdr";
@@ -264,6 +264,17 @@ describe("pane watch", () => {
     paneText = "frame three";
     await Bun.sleep(150);
     expect(c.inbox.filter((m) => m.frame)).toHaveLength(0);
+    c.close();
+  });
+
+  test("gw.screens reads each pane's screen once, without watching", async () => {
+    const c = new Client();
+    await c.open();
+    paneText = "one\r\ntwo\r\n\x1b[0m  \r\n";
+    c.send({ id: "s", method: "gw.screens", params: { panes: ["w1:p1", "w1:p2", 7], rows: 1 } });
+    const { result } = await c.next((m) => m.id === "s");
+    expect(result).toEqual({ type: "screens", screens: [{ pane_id: "w1:p1", text: "two" }, { pane_id: "w1:p2", text: "two" }] });
+    expect(lastRows("a\r\nb\r\nc", 5)).toBe("a\r\nb\r\nc");
     c.close();
   });
 

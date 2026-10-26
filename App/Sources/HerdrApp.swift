@@ -11,7 +11,6 @@ struct HerdrApp: App {
         WindowGroup {
             RootView()
                 .environment(app)
-                .environment(app.store)
                 .onOpenURL { app.handle(url: $0) }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -24,7 +23,7 @@ struct HerdrApp: App {
                     await app.push.refresh()
                     await app.refreshWidgetToken()
                 }
-            case .background: app.store.stop()
+            case .background: app.suspend()
             default: break
             }
         }

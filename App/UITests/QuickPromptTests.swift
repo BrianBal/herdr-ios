@@ -9,6 +9,7 @@ final class QuickPromptTests: XCTestCase {
         let env = ProcessInfo.processInfo.environment
         let app = XCUIApplication()
         app.launchEnvironment["HERDR_PAIR_LINK"] = try XCTUnwrap(env["HERDR_PAIR_LINK"])
+        app.launchEnvironment["HERDR_RESET_GATEWAYS"] = "1"
         app.launch()
         let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow"]
         if allow.waitForExistence(timeout: 8) { allow.tap() }
@@ -21,20 +22,23 @@ final class QuickPromptTests: XCTestCase {
         XCTAssertTrue(name.waitForExistence(timeout: 5))
         name.typeText("ios-qp-test")
         app.buttons["~/labs/ios-herdr"].firstMatch.tap()
-        app.swipeUp()
+        // A shell, not the default agent: never start one by accident.
         let start = app.buttons.containing(NSPredicate(format: "label BEGINSWITH 'Start'")).firstMatch
-        if start.waitForExistence(timeout: 3) {
-            start.tap()
-            app.buttons["Just a shell"].firstMatch.tap()
-        }
+        for _ in 0..<4 where !start.isHittable { app.swipeUp() }
+        XCTAssertTrue(start.waitForExistence(timeout: 3), "no agent picker")
+        start.tap()
+        let shell = app.buttons["Just a shell"].firstMatch
+        XCTAssertTrue(shell.waitForExistence(timeout: 3), "no Just a shell")
+        shell.tap()
         app.buttons["Create"].tap()
-        XCTAssertTrue(app.navigationBars["ios-qp-test"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["tabs-button"].waitForExistence(timeout: 15))
 
         let chip = app.buttons["Send ls -la"]
         XCTAssertTrue(chip.waitForExistence(timeout: 10), "no shell quick prompt chips")
         sleep(3)  // let the new shell reach its prompt
         chip.tap()
-        let listing = app.staticTexts.containing(NSPredicate(format: "label CONTAINS 'PLAN.md'")).firstMatch
+        // Short enough not to wrap on a narrow screen (file names do).
+        let listing = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS ' staff '")).firstMatch
         XCTAssertTrue(listing.waitForExistence(timeout: 10), "ls output didn't show")
 
         let field = app.textFields["Run a command…"].exists ? app.textFields["Run a command…"] : app.textViews["Run a command…"]

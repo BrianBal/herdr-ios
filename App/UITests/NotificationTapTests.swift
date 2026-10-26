@@ -15,7 +15,7 @@ final class NotificationTapTests: XCTestCase {
         // First connect asks for notification permission.
         let allow = springboard.buttons["Allow"]
         if allow.waitForExistence(timeout: 10) { allow.tap() }
-        XCTAssertTrue(app.staticTexts["Workspaces"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["Done"].waitForExistence(timeout: 15))
         XCUIDevice.shared.press(.home)
 
         // The host runs: xcrun simctl push <sim> dev.bal.herdr.app payload.json
@@ -25,7 +25,7 @@ final class NotificationTapTests: XCTestCase {
         banner.tap()
 
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-        XCTAssertTrue(app.navigationBars.staticTexts["html-gen"].waitForExistence(timeout: 10), "pane didn't open")
+        XCTAssertTrue(app.buttons["tabs-button"].waitForExistence(timeout: 10), "pane didn't open")
         if let dir = ProcessInfo.processInfo.environment["SCREENSHOT_DIR"] {
             try? app.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: "\(dir)/notif-open.png"))
         }

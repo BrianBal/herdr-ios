@@ -1,34 +1,27 @@
 import HerdrKit
 import SwiftUI
 
-/// One workspace. On phones (the unfolded Duo included): every split in every
-/// tab is a page in one continuous pager; tab chips and the split map jump
-/// around it. iPad: the current tab's splits side by side ([PaneGrid]). Either
-/// way the composer/toolbar act on the selected split.
+/// One workspace, full screen like a Safari tab, on every device: each split
+/// in each tab is a page in one continuous pager; tab chips and the split map
+/// jump around it. There's no navigation bar, the height goes to the terminal:
+/// its buttons (the tabs button first) sit in the split header, or in the side
+/// column a phone keeps in landscape. The composer/toolbar act on the selected split.
 struct WorkspaceView: View {
     @Environment(HerdrStore.self) private var store
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.showTabs) private var showTabs
     let workspaceId: String
     /// Owned by RootView so it survives fold/unfold layout switches.
     @Binding var selectedPaneId: String?
-    @Binding var showAgents: Bool
     @AppStorage("terminal.fontSize") private var fontSize = 11.0
     @AppStorage("terminal.wrap") private var wrap = true
     @AppStorage("terminal.fit") private var fitScreen = true
-    @Environment(\.toggleSidebar) private var toggleSidebar
-    /// Width of the column the unfolded Duo keeps beside the screen in
-    /// landscape for the clock and status icons; 0 elsewhere.
+    /// Width of the column a phone (the unfolded Duo too) keeps beside the
+    /// screen in landscape for the clock and status icons; 0 elsewhere.
     @State private var sideColumn: CGFloat = 0
 
     private var isPhone: Bool { UIDevice.current.userInterfaceIdiom == .phone }
-
-    /// The unfolded Duo, and any phone in landscape: no navigation bar, the
-    /// height goes to the terminal. Its buttons move to the side column in
-    /// landscape, or into the split header in portrait.
-    private var chromeless: Bool { isPhone && (sizeClass == .regular || verticalSizeClass == .compact) }
-    private var usesSideRail: Bool { chromeless && sideColumn >= 44 }
+    private var usesSideRail: Bool { sideColumn >= 44 }
 
     var body: some View {
         if let s = store.snapshot, let ws = s.workspace(workspaceId) {
@@ -56,34 +49,28 @@ struct WorkspaceView: View {
                     withAnimation { selectedPaneId = Self.entryPane(of: tabId, in: s)?.paneId }
                 }
             }
-            if sizeClass == .regular && !isPhone {
-                PaneGrid(panes: tabPanes, layout: layout, selection: current?.paneId) { paneId in
-                    selectedPaneId = paneId
+            if let current {
+                PaneHeader(pane: current,
+                           index: tabPanes.firstIndex(of: current) ?? 0,
+                           count: tabPanes.count,
+                           layout: layout,
+                           // Status bar hidden (phone portrait): iOS still keeps the top
+                           // ~21pt for itself and taps there don't arrive, so start lower.
+                           topInset: isPhone && !usesSideRail && verticalSizeClass != .compact ? 10 : 0) { paneId in
+                    withAnimation { selectedPaneId = paneId }
+                } actions: {
+                    if !usesSideRail { workspaceButtons(current, ws, hit: CGSize(width: 44, height: 36)) }
                 }
-            } else {
-                if let current {
-                    PaneHeader(pane: current,
-                               index: tabPanes.firstIndex(of: current) ?? 0,
-                               count: tabPanes.count,
-                               layout: layout,
-                               // Status bar hidden (Duo portrait): iOS still keeps the top
-                               // ~21pt for itself and taps there don't arrive, so start lower.
-                               topInset: chromeless && !usesSideRail && verticalSizeClass != .compact ? 10 : 0) { paneId in
-                        withAnimation { selectedPaneId = paneId }
-                    } actions: {
-                        if chromeless && !usesSideRail { workspaceButtons(current, ws, hit: CGSize(width: 44, height: 36)) }
-                    }
-                }
-                TabView(selection: $selectedPaneId) {
-                    ForEach(pages) { pane in
-                        PaneTerminalView(paneId: pane.paneId)
-                            .tag(Optional(pane.paneId))
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                // Under the Duo's side column too, so the rail sits on the terminal's color.
-                .background(TerminalRenderer.background.ignoresSafeArea(.container, edges: .horizontal))
             }
+            TabView(selection: $selectedPaneId) {
+                ForEach(pages) { pane in
+                    PaneTerminalView(paneId: pane.paneId)
+                        .tag(Optional(pane.paneId))
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            // Under the side column too, so the rail sits on the terminal's color.
+            .background(TerminalRenderer.background.ignoresSafeArea(.container, edges: .horizontal))
         }
         .background {
             PaneShortcuts(panes: tabPanes, tabs: tabs, currentTab: current?.tabId) { paneId in
@@ -100,8 +87,15 @@ struct WorkspaceView: View {
             if usesSideRail {
                 HStack(spacing: 0) {
                     Spacer(minLength: 0)
-                    SideRail {
-                        if let current { workspaceButtons(current, ws, hit: CGSize(width: 50, height: 44)) }
+                    // The clock and status icons sit at the top of the column:
+                    // centered below them, which on the folded Duo's short
+                    // screen means just under them.
+                    VStack(spacing: 0) {
+                        Spacer(minLength: sideRailStatusClearance)
+                        SideRail {
+                            if let current { workspaceButtons(current, ws, hit: CGSize(width: 50, height: 44)) }
+                        }
+                        Spacer(minLength: 8)
                     }
                     .frame(width: sideColumn)
                 }
@@ -109,58 +103,35 @@ struct WorkspaceView: View {
             }
         }
         .navigationTitle(ws.label)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar(chromeless ? .hidden : .automatic, for: .navigationBar)
-        .toolbar {
-            if let current {
-                ToolbarItem(placement: .topBarTrailing) {
-                    PaneMenu(pane: current, workspaceLabel: ws.label, selectedPaneId: $selectedPaneId)
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) { textMenu() }
-            if sizeClass != .regular {
-                ToolbarItem(placement: .topBarTrailing) { AgentsButton(showAgents: $showAgents) }
-            }
-        }
+        .toolbar(.hidden, for: .navigationBar)
         .sensoryFeedback(.selection, trigger: selectedPaneId)
         .onAppear {
-            // Keep a selection made elsewhere (an agent row, the other layout) if it's in this workspace.
-            if let id = selectedPaneId, pages.contains(where: { $0.paneId == id }) { return }
+            // Keep a selection made elsewhere (a notification) if it's in this workspace.
+            if let id = selectedPaneId, pages.contains(where: { $0.paneId == id }) {
+                store.noteVisible(paneId: id, in: workspaceId)
+                return
+            }
             selectedPaneId = current?.paneId
         }
-        .onChange(of: selectedPaneId) { _, id in
-            if id == nil { selectedPaneId = current?.paneId }
+        .onChange(of: selectedPaneId) { old, id in
+            if let old { store.keepPreview(of: old) }
+            if let id { store.noteVisible(paneId: id, in: workspaceId) } else { selectedPaneId = current?.paneId }
         }
+        .onDisappear { if let id = selectedPaneId { store.keepPreview(of: id) } }
         .onChange(of: pages.map(\.paneId)) { _, ids in
             // The visible split closed or moved away: fall back to the first page.
             if let sel = selectedPaneId, !ids.contains(sel) { selectedPaneId = ids.first }
         }
     }
 
-    /// The navigation bar's buttons, for when the workspace goes without one:
-    /// the sidebar toggle (split view) or Back (navigation stack) first. Each
-    /// gets a full-size tap target (`hit`), not just its glyph: in the rail the
-    /// whole capsule looks tappable.
+    /// The workspace's buttons, the tabs button first. Each gets a full-size
+    /// tap target (`hit`), not just its glyph: in the rail the whole capsule
+    /// looks tappable.
     @ViewBuilder
     private func workspaceButtons(_ current: Pane, _ ws: Workspace, hit: CGSize) -> some View {
-        if let toggleSidebar {
-            Button(action: toggleSidebar) {
-                Image(systemName: "sidebar.left")
-                    .frame(width: hit.width, height: hit.height)
-                    .contentShape(.rect)
-            }
-            .accessibilityLabel("Workspaces")
-        } else {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.backward")
-                    .frame(width: hit.width, height: hit.height)
-                    .contentShape(.rect)
-            }
-            .accessibilityLabel("Back")
-        }
+        TabsButton(gatewayId: store.gatewayId, workspaceId: workspaceId, hit: hit) { showTabs?() }
         PaneMenu(pane: current, workspaceLabel: ws.label, selectedPaneId: $selectedPaneId, hit: hit)
         textMenu(hit: hit)
-        if sizeClass != .regular { AgentsButton(showAgents: $showAgents, hit: hit) }
     }
 
     private func textMenu(hit: CGSize? = nil) -> some View {
@@ -186,7 +157,10 @@ struct WorkspaceView: View {
     }
 }
 
-/// The workspace's buttons stacked in the unfolded Duo's side column, in
+/// Height of the clock and status icons at the top of a phone's side column.
+private let sideRailStatusClearance: CGFloat = 150
+
+/// The workspace's buttons stacked in a phone's side column in landscape, in
 /// place of a navigation bar.
 private struct SideRail<Content: View>: View {
     @ViewBuilder let content: Content
@@ -288,140 +262,6 @@ private func abbreviate(_ path: String) -> String {
         return "~" + path[r.upperBound...]
     }
     return path
-}
-
-/// Regular width (iPad, iPhone Duo unfolded): the current tab's splits side by
-/// side, arranged the way herdr arranges them on the Mac. When that would leave
-/// a split too small to read, shows two at a time in a pager instead, which also
-/// keeps a split from straddling the Duo's fold. In portrait the pager shows one
-/// at a time. Tap a split to select it.
-private struct PaneGrid: View {
-    let panes: [Pane]
-    let layout: PaneLayout?
-    let selection: String?
-    let onSelect: (String) -> Void
-    @State private var page = 0
-
-    static let minTile = CGSize(width: 300, height: 200)
-    static let gap: CGFloat = 1
-
-    var body: some View {
-        GeometryReader { geo in
-            // The unfolded Duo keeps the status bar and toolbar in a column at the
-            // trailing edge. Splits that reach it run underneath, text kept clear.
-            let trailing = geo.safeAreaInsets.trailing
-            // Portrait: one split at a time, full width.
-            let portrait = geo.size.height > geo.size.width
-            Group {
-                if !portrait, let frames = frames(in: geo.size) {
-                    ZStack(alignment: .topLeading) {
-                        ForEach(panes) { pane in
-                            if let f = frames[pane.paneId] {
-                                let under = f.maxX >= geo.size.width - 0.5 ? trailing : 0
-                                tile(pane, highlight: panes.count > 1, position: nil, trailingInset: under)
-                                    .frame(width: f.width + under, height: f.height)
-                                    .offset(x: f.minX, y: f.minY)
-                            }
-                        }
-                    }
-                } else {
-                    pager(perPage: !portrait && geo.size.width >= 2 * Self.minTile.width ? 2 : 1, trailingInset: trailing)
-                }
-            }
-            .ignoresSafeArea(.container, edges: .trailing)
-        }
-        .background(Color(white: 0.3))
-    }
-
-    /// herdr's layout scaled to `size`, or nil when it doesn't fit legibly.
-    private func frames(in size: CGSize) -> [String: CGRect]? {
-        guard let layout, size.width > 0 else { return nil }
-        let area = layout.area
-        let sx = size.width / CGFloat(max(1, area.width))
-        let sy = size.height / CGFloat(max(1, area.height))
-        var frames: [String: CGRect] = [:]
-        for p in layout.panes {
-            let r = CGRect(x: CGFloat(p.rect.x - area.x) * sx, y: CGFloat(p.rect.y - area.y) * sy,
-                           width: CGFloat(p.rect.width) * sx, height: CGFloat(p.rect.height) * sy)
-            // Hairline gaps between neighbours, none at the outer edges.
-            let inset = CGRect(x: r.minX + (r.minX > 0.5 ? Self.gap : 0), y: r.minY + (r.minY > 0.5 ? Self.gap : 0),
-                               width: r.width - (r.minX > 0.5 ? Self.gap : 0),
-                               height: r.height - (r.minY > 0.5 ? Self.gap : 0))
-            if layout.panes.count > 1, inset.width < Self.minTile.width || inset.height < Self.minTile.height {
-                return nil
-            }
-            frames[p.paneId] = inset
-        }
-        return panes.allSatisfy { frames[$0.paneId] != nil } ? frames : nil
-    }
-
-    private func pager(perPage: Int, trailingInset: CGFloat) -> some View {
-        let pages = stride(from: 0, to: panes.count, by: perPage).map { Array(panes[$0..<min($0 + perPage, panes.count)]) }
-        let pageOfSelection = panes.firstIndex { $0.paneId == selection }.map { $0 / perPage } ?? 0
-        return TabView(selection: $page) {
-            ForEach(pages.indices, id: \.self) { i in
-                HStack(spacing: Self.gap) {
-                    ForEach(pages[i]) { pane in
-                        tile(pane, highlight: perPage > 1,
-                             position: pages.count > 1 ? "\(panes.firstIndex(of: pane).map { $0 + 1 } ?? 0)/\(panes.count)" : nil,
-                             trailingInset: pane == pages[i].last ? trailingInset : 0)
-                    }
-                }
-                .tag(i)
-            }
-        }
-        .tabViewStyle(.page(indexDisplayMode: .never))
-        .onAppear { page = pageOfSelection }
-        .onChange(of: pageOfSelection) { _, p in withAnimation { page = p } }
-        .onChange(of: page) { _, p in
-            // Swiping to another page selects its first split.
-            if p != pageOfSelection, pages.indices.contains(p), let first = pages[p].first { onSelect(first.paneId) }
-        }
-    }
-
-    /// `highlight`: more than one split is on screen, so mark the selected one.
-    /// `position`: "2/5" when the pager hides some splits.
-    /// `trailingInset`: width of the tile under the trailing column, kept free of text.
-    private func tile(_ pane: Pane, highlight: Bool, position: String?, trailingInset: CGFloat) -> some View {
-        let selected = pane.paneId == selection && highlight
-        return VStack(spacing: 0) {
-            TileHeader(pane: pane, selected: selected, position: position)
-            PaneTerminalView(paneId: pane.paneId)
-        }
-        .safeAreaPadding(.trailing, trailingInset)
-        .overlay {
-            Rectangle().strokeBorder(Color.accentColor.opacity(selected ? 0.8 : 0), lineWidth: 2)
-                .allowsHitTesting(false)
-        }
-        .contentShape(Rectangle())
-        .simultaneousGesture(TapGesture().onEnded { onSelect(pane.paneId) })
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
-private struct TileHeader: View {
-    let pane: Pane
-    let selected: Bool
-    let position: String?
-
-    var body: some View {
-        HStack(spacing: 6) {
-            if pane.hasAgent { StatusIcon(status: pane.agentStatus, size: 11) }
-            Text(pane.displayTitle).font(.caption.weight(.semibold)).lineLimit(1)
-            if let dir = pane.foregroundCwd ?? pane.cwd {
-                Text(abbreviate(dir)).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(1)
-                    .truncationMode(.head)
-            }
-            Spacer(minLength: 0)
-            if let position {
-                Text(position).font(.caption2.monospacedDigit().weight(.medium)).foregroundStyle(.secondary)
-                Image(systemName: "chevron.left.chevron.right").font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(selected ? AnyShapeStyle(.tint.opacity(0.2)) : AnyShapeStyle(.bar))
-    }
 }
 
 /// Hardware-keyboard shortcuts (iPad, or a keyboard on the Duo): ⌘1–9 select a
@@ -605,6 +445,8 @@ struct PaneTerminalView: View {
                 // Messages) or tap the output. Links and buttons keep their taps, and
                 // the draft stays in the field.
                 .scrollDismissesKeyboard(.interactively)
+                // Even a short pane drags (and so puts the keyboard away).
+                .scrollBounceBehavior(.always, axes: .vertical)
                 .onTapGesture { dismissKeyboard() }
                 .accessibilityIdentifier("pane-output")
                 // Pull down at the top for earlier output.
