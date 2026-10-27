@@ -172,9 +172,18 @@ final class TerminalModel {
         switch historyState {
         case .none: return status == .live
         case .loaded(let more): return more
+        case .empty:
+            // Asked while there was nothing (a new shell, say): worth asking
+            // again once output has come in, but not on every frame.
+            guard status == .live, lines != emptyScreen.lines else { return false }
+            return Date.now.timeIntervalSince(emptyScreen.at) > Self.emptyRetry
         default: return false
         }
     }
+
+    /// The screen when the last request found nothing before it.
+    private var emptyScreen: (lines: [StyledLine], at: Date) = ([], .distantPast)
+    static let emptyRetry: TimeInterval = 3
 
     /// The "Load earlier output" header: not when the top is a gap, which loads itself.
     var showsHistoryHeader: Bool {
@@ -321,6 +330,7 @@ final class TerminalModel {
             historyLines = earlier
             await rerenderHistory()
             if earlier.isEmpty {
+                emptyScreen = (visible, .now)
                 historyState = .empty
             } else {
                 historyState = .loaded(more: truncated && request < Self.historyMaxRequest && earlier.count > previousCount)

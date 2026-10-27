@@ -13,24 +13,7 @@ final class PaneActionsTests: XCTestCase {
         let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow"]
         if allow.waitForExistence(timeout: 8) { allow.tap() }
 
-        let plus = app.buttons["New workspace"]
-        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: plus)
-        waitForExpectations(timeout: 20)
-        plus.tap()
-        let name = app.textFields["Name (optional)"]
-        XCTAssertTrue(name.waitForExistence(timeout: 5))
-        name.typeText("ios-split-test")
-        app.buttons["~/labs/ios-herdr"].firstMatch.tap()
-        // A shell, not the default agent: never start one by accident.
-        let start = app.buttons.containing(NSPredicate(format: "label BEGINSWITH 'Start'")).firstMatch
-        for _ in 0..<4 where !start.isHittable { app.swipeUp() }
-        XCTAssertTrue(start.waitForExistence(timeout: 3), "no agent picker")
-        start.tap()
-        let shell = app.buttons["Just a shell"].firstMatch
-        XCTAssertTrue(shell.waitForExistence(timeout: 3), "no Just a shell")
-        shell.tap()
-        app.buttons["Create"].tap()
-        XCTAssertTrue(app.buttons["tabs-button"].waitForExistence(timeout: 15))
+        app.createShellWorkspace("ios-split-test")
 
         let menu = app.buttons["Pane actions"]
         XCTAssertTrue(menu.waitForExistence(timeout: 10))

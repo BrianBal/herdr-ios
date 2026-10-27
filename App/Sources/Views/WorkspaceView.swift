@@ -438,6 +438,9 @@ struct PaneTerminalView: View {
                     if phase == .interacting {
                         heldTop = nil
                         scrolledByHand = true
+                        // A screen about a page tall is near the top from the start, so
+                        // that doesn't change as you scroll: this is the cue to load.
+                        loadNearTop()
                     }
                 }
                 .scrollIndicators(.visible)
@@ -449,8 +452,6 @@ struct PaneTerminalView: View {
                 .scrollBounceBehavior(.always, axes: .vertical)
                 .onTapGesture { dismissKeyboard() }
                 .accessibilityIdentifier("pane-output")
-                // Pull down at the top for earlier output.
-                .refreshable { await loadEarlier() }
             }
         }
         .overlay(alignment: .top) {

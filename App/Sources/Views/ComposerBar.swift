@@ -96,9 +96,9 @@ struct ComposerBar: View {
             .focused($focused)
             .accessibilityIdentifier("composer-field")
             .submitLabel(.return)
-            // Prose for agents; commands for shells, where "Echo" breaks things. No
-            // autocorrect for either: it rewrites flags, paths and code names.
-            .textInputAutocapitalization(pane.hasAgent ? .sentences : .never)
+            // No auto-capitals or autocorrect, for agents too: prompts are full of
+            // commands, flags, paths and code names, and "Echo" breaks a shell.
+            .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .padding(.horizontal, 12)
             .padding(.vertical, 9)

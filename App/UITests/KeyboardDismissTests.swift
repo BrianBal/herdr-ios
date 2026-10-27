@@ -30,6 +30,11 @@ final class KeyboardDismissTests: XCTestCase {
 
         // Drag down into the keyboard, with a draft in the field.
         field.tap()
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        if keyboard.frame.minY >= app.frame.maxY {
+            throw XCTSkip("The keyboard isn't on screen to drag into (the iPhone Duo simulator's folded screen); run on an iPhone simulator.")
+        }
         field.typeText("draft to keep")
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
         let start = output.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
