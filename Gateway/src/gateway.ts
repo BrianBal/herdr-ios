@@ -336,7 +336,7 @@ export function createGateway({ config, herdr, push, uploads, herdrBin, claudeHo
     if (!w) return false;
     w.stopped = true;
     if (w.timer) clearTimeout(w.timer);
-    w.fit?.close();
+    if (w.fit) releaseFit(w.fit);
     ws.data.watches.delete(watchId);
     return true;
   }
@@ -344,13 +344,36 @@ export function createGateway({ config, herdr, push, uploads, herdrBin, claudeHo
   function setFit(w: Watch, cols: unknown, rows: unknown) {
     const size = herdrBin ? fitSize(cols, rows) : null;
     if (!size) {
-      w.fit?.close();
+      if (w.fit) releaseFit(w.fit);
       w.fit = undefined;
     } else if (w.fit) {
       w.fit.resize(size);
     } else {
       w.fit = new PaneFit(w.pane_id, size, { herdrBin: herdrBin!, socket: herdr.path, log });
     }
+  }
+
+  /** The pane's split of the herdr window (herdr keeps reporting it while the pane is held). */
+  async function paneSlot(paneId: string): Promise<{ cols: number; rows: number } | null> {
+    try {
+      const layouts = (await herdr.call("session.snapshot", {}, 2000)).result?.snapshot?.layouts ?? [];
+      for (const l of layouts) {
+        const p = l.panes?.find((p: any) => p.pane_id === paneId);
+        if (p) return fitSize(p.rect?.width, p.rect?.height);
+      }
+    } catch {}
+    return null;
+  }
+
+  /**
+   * Gives a held pane back. When no herdr window shows its tab, herdr leaves
+   * it at the held size on release, so it's put back to its split first.
+   */
+  function releaseFit(fit: PaneFit) {
+    paneSlot(fit.paneId).then((slot) => {
+      if (slot) fit.resize(slot);
+      fit.close();
+    });
   }
 
   /** Poll watches on this pane right away so typed input echoes quickly. */

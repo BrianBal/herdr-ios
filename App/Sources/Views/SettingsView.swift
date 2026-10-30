@@ -6,7 +6,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("terminal.fontSize") private var fontSize = 11.0
     @AppStorage("terminal.wrap") private var wrap = true
-    @AppStorage("terminal.fit") private var fitScreen = true
+    @AppStorage("terminal.widenPanes") private var widenPanes = true
     @State private var addingGateway = false
     @State private var removing: SavedGateway?
     @State private var testResult: String?
@@ -29,12 +29,11 @@ struct SettingsView: View {
                         LabeledContent("Font size", value: "\(Int(fontSize)) pt")
                     }
                     Toggle("Wrap long lines", isOn: $wrap)
-                    Toggle("Fit panes to this screen", isOn: $fitScreen)
-                        .disabled(!wrap)
+                    Toggle("Widen narrow panes", isOn: $widenPanes)
                 } header: {
                     Text("Terminal")
                 } footer: {
-                    Text("Shrinks the pane you're viewing to this screen, like a smaller tmux client, so full-screen programs such as opencode redraw to fit. The Mac shows it smaller until you leave the pane.")
+                    Text("While you view a pane split narrower than 80 columns, herdr runs it 80 wide so programs such as opencode draw their full layout. The Mac shows it widened too until you leave the pane.")
                 }
             }
             .navigationTitle("Settings")

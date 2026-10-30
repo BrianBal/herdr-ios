@@ -293,10 +293,23 @@ final class HerdrStore {
     /// Agents get `agent.prompt` (bracketed-paste safe, then Enter); shells get text + Enter.
     @discardableResult
     func submit(_ text: String, to pane: Pane) async -> Bool {
-        if pane.hasAgent {
-            await perform("agent.prompt", ["target": .string(pane.paneId), "text": .string(text)])
-        } else {
-            await perform("pane.send_input", ["pane_id": .string(pane.paneId), "text": .string(text), "keys": ["enter"]])
+        let typed: JSONValue = ["pane_id": .string(pane.paneId), "text": .string(text), "keys": ["enter"]]
+        guard pane.hasAgent else { return await perform("pane.send_input", typed) }
+        guard let client else {
+            actionError = "Not connected to herdr."
+            return false
+        }
+        do {
+            try await client.send("agent.prompt", params: ["target": .string(pane.paneId), "text": .string(text)])
+            return true
+        } catch GatewayError.server(code: "agent_blocked", _) {
+            // herdr won't prompt an agent it thinks is waiting for an answer,
+            // and its hooks can leave that stale (OpenCode stays "blocked" after
+            // a subagent's question). You can see the screen: type it in.
+            return await perform("pane.send_input", typed)
+        } catch {
+            actionError = error.localizedDescription
+            return false
         }
     }
 

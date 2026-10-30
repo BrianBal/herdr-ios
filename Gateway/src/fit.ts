@@ -1,7 +1,9 @@
 // Holds a pane at the phone's size, the way a smaller tmux client shrinks a
 // window: a herdr terminal session controller owns the pane's resize while it
 // runs, so full-screen programs (opencode, vim, htop) redraw to fit the phone
-// instead of being rewrapped there. When it exits herdr puts back the Mac's size.
+// instead of being rewrapped there. herdr doesn't always put the pane back when
+// it exits (not while no herdr window shows the tab), so the gateway resizes it
+// to its split before letting go.
 
 import type { Subprocess } from "bun";
 

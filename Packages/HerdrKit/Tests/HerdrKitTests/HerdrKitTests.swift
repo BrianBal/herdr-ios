@@ -446,6 +446,37 @@ import Testing
 }
 
 extension ScrollbackTests {
+    @Test func scrolledOffTakesWhatLeftTheTop() {
+        let old = Self.lines(["a1", "a2", "a3", "b1", "b2", "b3", "b4", "b5", "b6", "b7", "", "> input", "⠴ working"])
+        let new = Self.lines(["a3", "b1", "b2", "b3", "b4", "b5", "b6", "b7", "c1", "c2", "", "> input", "⠦ working"])
+        #expect(Scrollback.scrolledOff(from: old, to: new)?.map(\.plainText) == ["a1", "a2"])
+    }
+
+    @Test func scrolledOffToleratesALineChangingInPlace() {
+        let old = Self.lines(["x", "m1", "m2", "⠴ task", "m3", "m4", "m5", "m6", "m7", "m8"])
+        let new = Self.lines(["m1", "m2", "⠦ task", "m3", "m4", "m5", "m6", "m7", "m8", "m9"])
+        #expect(Scrollback.scrolledOff(from: old, to: new)?.map(\.plainText) == ["x"])
+    }
+
+    @Test func scrolledOffIsNilWhenNothingMovedOrNoOverlap() {
+        let old = Self.lines(["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "", "⠴ working"])
+        var same = old
+        same[9] = StyledLine(runs: [StyledRun(text: "⠦ working", style: TermStyle())])
+        #expect(Scrollback.scrolledOff(from: old, to: same) == nil)
+        let redrawn = Self.lines(["n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8", "", "⠴ working"])
+        #expect(Scrollback.scrolledOff(from: old, to: redrawn) == nil)
+        // Short or empty frames (the first one, a small pane).
+        #expect(Scrollback.scrolledOff(from: [], to: old) == nil)
+        #expect(Scrollback.scrolledOff(from: Self.lines(["a", "b", "c"]), to: old) == nil)
+        #expect(Scrollback.scrolledOff(from: old, to: Self.lines(["m2", "m3", "m4", "m5"])) == nil)
+        #expect(Scrollback.scrolledOff(from: Self.lines(["a", "m1", "m2", "m3", "m4", "m5", "m6", "m7"]), to: old) == nil)
+        // Blank rows alone don't count as a match.
+        let blank = Self.lines(["", "", "", "", "", "", "", "", "", "", "", "x"])
+        #expect(Scrollback.scrolledOff(from: blank, to: Self.lines(["", "", "", "", "", "", "", "", "", "", "y", "z"])) == nil)
+    }
+}
+
+extension ScrollbackTests {
     @Test func agentTranscriptWithDifferentLineBreaks() {
         // The screen shows a long prompt on one line; the transcript breaks it.
         let recent = Self.lines([

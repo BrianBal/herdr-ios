@@ -38,6 +38,48 @@ public enum Scrollback {
         return lines
     }
 
+    /// The lines that scrolled off the top between two frames of the same
+    /// screen: `old`'s first lines, when `new` starts with what came after them.
+    /// A full-screen agent (OpenCode, say) keeps its own scrollback, which herdr
+    /// can only read while it's idle; this keeps what goes by meanwhile.
+    ///
+    /// Compares a window of `new`'s top rows with `old` shifted up, letting a
+    /// few differ (a spinner, a line still being written), and takes the
+    /// smallest shift that fits. Nil when nothing moved, or the frames don't
+    /// overlap (a redraw, a resize, a jump of more than a screen).
+    public static func scrolledOff(from old: [StyledLine], to new: [StyledLine]) -> [StyledLine]? {
+        let key = { (line: StyledLine) in line.plainText.trimmingCharacters(in: .whitespaces) }
+        let oldKeys = old.map(key)
+        let newKeys = new.map(key)
+        let window = min(shiftWindow, newKeys.count)
+        // A scroll keeps the screen's height (a resize doesn't), and moving up by
+        // at least a row needs a window's worth of `old` below it.
+        guard oldKeys.count == newKeys.count, window >= shiftWindow / 2, oldKeys.count > window,
+              oldKeys != newKeys else { return nil }
+        // Unmoved: the top is where it was.
+        if matches(oldKeys, at: 0, newKeys, window: window) { return nil }
+        for shift in 1...max(1, oldKeys.count - window) where shift + window <= oldKeys.count {
+            if matches(oldKeys, at: shift, newKeys, window: window) {
+                return Array(old.prefix(shift))
+            }
+        }
+        return nil
+    }
+
+    private static let shiftWindow = 8
+
+    /// `old` from `shift` on lines up with `new`'s top: nearly every row the
+    /// same, and enough of them with text that blank rows can't fake it.
+    private static func matches(_ old: [String], at shift: Int, _ new: [String], window: Int) -> Bool {
+        var same = 0
+        var sameText = 0
+        for i in 0..<window where old[shift + i] == new[i] {
+            same += 1
+            if !new[i].isEmpty { sameText += 1 }
+        }
+        return same >= window - 2 && sameText >= 3
+    }
+
     private static let looseKeyLength = 40
 
     private static func looseKey(_ text: String) -> String {

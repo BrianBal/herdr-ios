@@ -15,7 +15,7 @@ struct WorkspaceView: View {
     @Binding var selectedPaneId: String?
     @AppStorage("terminal.fontSize") private var fontSize = 11.0
     @AppStorage("terminal.wrap") private var wrap = true
-    @AppStorage("terminal.fit") private var fitScreen = true
+    @AppStorage("terminal.widenPanes") private var widenPanes = true
     /// Width of the column a phone (the unfolded Duo too) keeps beside the
     /// screen in landscape for the clock and status icons; 0 elsewhere.
     @State private var sideColumn: CGFloat = 0
@@ -139,8 +139,7 @@ struct WorkspaceView: View {
             Button { fontSize = min(20, fontSize + 1) } label: { Label("Larger text", systemImage: "textformat.size.larger") }
             Button { fontSize = max(7, fontSize - 1) } label: { Label("Smaller text", systemImage: "textformat.size.smaller") }
             Toggle(isOn: $wrap) { Label("Wrap long lines", systemImage: "text.word.spacing") }
-            Toggle(isOn: $fitScreen) { Label("Fit panes to this screen", systemImage: "arrow.down.right.and.arrow.up.left") }
-                .disabled(!wrap)
+            Toggle(isOn: $widenPanes) { Label("Widen narrow panes", systemImage: "arrow.left.and.right") }
         } label: {
             Image(systemName: "textformat.size")
                 .frame(width: hit?.width, height: hit?.height)
@@ -334,8 +333,10 @@ struct PaneTerminalView: View {
     let paneId: String
     @AppStorage("terminal.fontSize") private var fontSize = 11.0
     @AppStorage("terminal.wrap") private var wrap = true
-    @AppStorage("terminal.fit") private var fitScreen = true
+    @AppStorage("terminal.widenPanes") private var widenPanes = true
     @GestureState private var pinch: CGFloat = 1
+    /// Where the pinch started, in the pane: the grid zooms around it.
+    @GestureState private var pinchAt: CGPoint?
     @State private var width: CGFloat = 0
     @State private var height: CGFloat = 0
     @State private var scroll = ScrollPosition(edge: .bottom)
@@ -348,77 +349,199 @@ struct PaneTerminalView: View {
     /// Within a screen of the top, where earlier output loads by itself.
     @State private var nearTop = NearTop()
     @State private var scrolledByHand = false
+    /// The grid's zoom: 1 is fit to width. Back to fit each time the pane opens.
+    @State private var zoom: CGFloat = 1
 
     /// Kept by the store, so history survives swiping away and back.
     private var model: TerminalModel { store.terminal(for: paneId) }
     private var agent: String? { store.snapshot?.pane(paneId)?.agent }
+    private var agentName: String { store.snapshot?.pane(paneId).flatMap { $0.displayAgent ?? $0.agent } ?? "the agent" }
+    private var agentWorking: Bool { store.snapshot?.pane(paneId)?.agentStatus == .working }
 
     static let gutterWidth: CGFloat = 28
 
     /// SF Mono advance is ~0.6 em; minus padding, the copy gutter and a safety margin.
     private var wrapColumns: Int? {
-        guard wrap, width > 0 else { return nil }
+        guard wrap || grid, width > 0 else { return nil }
         return max(10, Int((width - 16 - Self.gutterWidth) / (fontSize * 0.602)) - 2)
     }
 
-    /// The size to hold the pane at so its program draws for this screen
-    /// instead of the Mac's split. Only while wrapping: scrolling sideways is
-    /// for reading the Mac's layout as is.
+    /// Every pane's screen drawn as the terminal grid, scaled to fit, instead of
+    /// split into messages and re-wrapped. (Claude's transcript history still
+    /// wraps: it's paragraphs, with no width of its own.)
+    private var grid: Bool { true }
+
+
+    /// The grid's width in cells: the widest row on screen, or the pane's width.
+    private var gridColumns: Int { max(GridTerminal.columns(model.lines), paneColumns ?? 0, 10) }
+    /// The visible width for content, inside the padding: what wrapped rows fill
+    /// (in a scroll view that also scrolls sideways, they'd otherwise never wrap).
+    private var screenWidth: CGFloat { max(0, width - 16) }
+    private var gridFitFont: CGFloat { GridTerminal.fitFont(columns: gridColumns, width: width - 16) }
+    private var gridMaxZoom: CGFloat { GridTerminal.maxZoom(fitFont: gridFitFont, textSize: fontSize) }
+    private var gridFont: CGFloat { gridFitFont * min(zoom, gridMaxZoom) }
+
+    /// Changes each time the pane appears: the grid opens fitted, at the bottom.
+    @State private var openCount = 0
+
+    /// The pane as its terminal grid, in a natively zooming scroll view.
+    private var gridPane: some View {
+        GridPaneView(
+            top: VStack(alignment: .leading, spacing: 0) {
+                if model.showsHistoryHeader {
+                    HistoryHeader(state: model.historyState, agent: agentName) { Task { await loadEarlier() } }
+                }
+                if model.historyIsTranscript {
+                    ForEach(model.history) { row in
+                        switch row {
+                        case .segment(let segment):
+                            SegmentView(segment: segment, wrap: true)
+                        case .gap(let gap):
+                            GapMarker(row: gap) { Task { await fill(gap.gap) } }
+                        }
+                    }
+                }
+                if !model.history.isEmpty { LiveDivider(joined: model.historyJoined) }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 6),
+            history: model.historyIsTranscript ? [] : model.historyLines,
+            screen: model.screenRows,
+            columns: gridColumns,
+            maxZoom: gridMaxZoom,
+            openCount: openCount,
+            onNearTop: { short in
+                guard model.status == .live else { return }
+                if model.historyIsTranscript {
+                    // The top gap loads as you reach it (others with their button).
+                    if case .gap(let gap)? = model.history.first { Task { await fill(gap.gap) } }
+                } else if model.canLoadMore, model.historyState != .none || scrolledByHand || short {
+                    Task { await loadEarlier() }
+                }
+            },
+            onScrollStart: { scrolledByHand = true },
+            onTap: { dismissKeyboard() }
+        )
+        .accessibilityIdentifier("pane-output")
+        .onAppear { openCount += 1 }
+    }
+
+    /// The pinch as it's happening; the grid's held between fit and its most zoomed in.
+    private var livePinch: CGFloat {
+        guard grid else { return pinch }
+        return min(gridMaxZoom, max(1, zoom * pinch)) / zoom
+    }
+
+    /// What the live pinch scales around: the grid, the point under the fingers.
+    private var pinchAnchor: UnitPoint {
+        guard grid, let at = pinchAt, spot.contentWidth > 0, spot.contentHeight > 0 else { return .bottomLeading }
+        return UnitPoint(x: (spot.left + at.x) / spot.contentWidth, y: (spot.top + at.y) / spot.contentHeight)
+    }
+
+    /// Zooms the grid keeping the content under `focus` (a point in the pane)
+    /// where it is, so you stay on what you were reading.
+    private func zoomGrid(to target: CGFloat, at focus: CGPoint) {
+        let old = min(zoom, gridMaxZoom)
+        let new = min(gridMaxZoom, max(1, target))
+        guard abs(new - old) > 0.001 else { return }
+        let ratio = new / old
+        // Only the grid scales. Above a Claude pane's screen, the transcript
+        // (wrapped to the screen) stays as it is: measure from where the grid starts.
+        let gridTop = model.historyIsTranscript ? historyHeight : 0
+        let at = spot.top + focus.y
+        let x = max(0, (spot.left + focus.x) * ratio - focus.x)
+        let y = at < gridTop ? spot.top : max(0, gridTop + (at - gridTop) * ratio - focus.y)
+        zoom = new
+        // Once the grid has laid out at the new size (the bottom anchor moves it first).
+        Task {
+            try? await Task.sleep(for: .milliseconds(40))
+            scroll.scrollTo(x: x, y: y - spot.inset)
+        }
+    }
+
+    /// The size to hold the pane at while it's on this screen: a pane split
+    /// narrower than `GridTerminal.minColumns` is widened to it (keeping its
+    /// rows), so programs like opencode draw their normal layout instead of a
+    /// cramped one; the grid then fits that to the screen. Wider panes are left
+    /// as they are. herdr shows the Mac the same widened pane until you leave.
     private var fitSize: PaneSize? {
-        guard fitScreen, let cols = wrapColumns, height > 0 else { return nil }
-        let line = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular).lineHeight
-        return PaneSize(cols: cols, rows: max(5, Int((height - 12) / line)))
+        guard grid, widenPanes, let slot, slot.width < GridTerminal.minColumns else { return nil }
+        return PaneSize(cols: GridTerminal.minColumns, rows: slot.height)
+    }
+
+    /// The pane's split of the herdr window. herdr keeps reporting this while
+    /// the pane is held at another size.
+    private var slot: LayoutRect? {
+        guard let s = store.snapshot, let pane = s.pane(paneId) else { return nil }
+        return s.layouts.first { $0.tabId == pane.tabId }?.panes.first { $0.paneId == paneId }?.rect
     }
 
     private var agentPane: Bool { store.snapshot?.pane(paneId)?.hasAgent ?? false }
 
-    /// Width of this pane in cells: the fitted width, else its split on the Mac.
-    private var paneColumns: Int? {
-        if let fitSize { return fitSize.cols }
-        guard let s = store.snapshot, let pane = s.pane(paneId) else { return nil }
-        return s.layouts.first { $0.tabId == pane.tabId }?.panes.first { $0.paneId == paneId }?.rect.width
-    }
+    /// Width of this pane in cells: the widened width, else its split on the Mac.
+    private var paneColumns: Int? { fitSize?.cols ?? slot?.width }
 
     var body: some View {
         ZStack {
             TerminalRenderer.background.ignoresSafeArea()
             if model.status == .loading && model.isEmpty {
                 ProgressView().tint(TerminalRenderer.foreground)
+            } else if grid {
+                gridPane
             } else {
-                ScrollView(wrap ? .vertical : [.vertical, .horizontal]) {
+                // The grid always scrolls both ways (it's only wider than the
+                // screen when zoomed): switching would rebuild it on every zoom.
+                ScrollView(wrap && !grid ? .vertical : [.vertical, .horizontal]) {
                     VStack(alignment: .leading, spacing: 0) {
                         VStack(alignment: .leading, spacing: 0) {
                             if model.showsHistoryHeader {
-                                HistoryHeader(state: model.historyState) { Task { await loadEarlier() } }
+                                HistoryHeader(state: model.historyState, agent: agentName) { Task { await loadEarlier() } }
+                                    .frame(width: grid ? screenWidth : nil)
                             }
+                            if grid && !model.historyIsTranscript {
+                                GridRows(lines: model.historyLines, columns: gridColumns, fontSize: gridFont)
+                            } else {
                             ForEach(model.history) { row in
                                 switch row {
                                 case .segment(let segment):
-                                    SegmentView(segment: segment, wrap: wrap)
+                                    SegmentView(segment: segment, wrap: wrap || grid)
                                 case .gap(let gap):
                                     GapMarker(row: gap) { Task { await fill(gap.gap) } }
                                 }
                             }
-                            if !model.history.isEmpty { LiveDivider(joined: model.historyJoined) }
+                            .frame(width: grid ? screenWidth : nil)
+                            }
+                            if !model.history.isEmpty {
+                                LiveDivider(joined: model.historyJoined).frame(width: grid ? screenWidth : nil)
+                            }
                         }
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                             historyHeight = height
                             holdPlace()
                         }
-                        ForEach(model.segments) { segment in
-                            SegmentView(segment: segment, wrap: wrap)
+                        if grid {
+                            GridRows(lines: model.screenRows, columns: gridColumns, fontSize: gridFont)
+                        } else {
+                            ForEach(model.segments) { segment in
+                                SegmentView(segment: segment, wrap: wrap)
+                            }
                         }
                     }
-                    .frame(maxWidth: wrap ? .infinity : nil, alignment: .leading)
+                    .frame(maxWidth: wrap && !grid ? .infinity : nil, alignment: .leading)
                     .padding(.leading, 8)
                     .padding(.trailing, wrap ? 4 : 8)
                     .padding(.vertical, 6)
-                    .scaleEffect(pinch, anchor: .bottomLeading)
+                    .scaleEffect(livePinch, anchor: pinchAnchor)
+                    .background(DirectionalScrollLock())
                 }
-                .defaultScrollAnchor(.bottom)
+                // Bottom-left: `.bottom` is bottom-center, which opens a pane wider
+                // than the screen halfway across it.
+                .defaultScrollAnchor(.bottomLeading)
                 .scrollPosition($scroll)
                 .onScrollGeometryChange(for: ScrollSpot.self) { geo in
-                    ScrollSpot(top: geo.contentOffset.y + geo.contentInsets.top, inset: geo.contentInsets.top)
+                    ScrollSpot(top: geo.contentOffset.y + geo.contentInsets.top, inset: geo.contentInsets.top,
+                               left: geo.contentOffset.x + geo.contentInsets.leading,
+                               contentWidth: geo.contentSize.width, contentHeight: geo.contentSize.height)
                 } action: { _, spot in
                     self.spot = spot
                     holdPlace()
@@ -451,6 +574,10 @@ struct PaneTerminalView: View {
                 // Even a short pane drags (and so puts the keyboard away).
                 .scrollBounceBehavior(.always, axes: .vertical)
                 .onTapGesture { dismissKeyboard() }
+                // The grid: double-tap zooms in where you tapped, or back to fit.
+                .simultaneousGesture(SpatialTapGesture(count: 2).onEnded { tap in
+                    zoomGrid(to: zoom > 1.01 ? 1 : 2, at: tap.location)
+                }, including: grid ? .all : .subviews)
                 .accessibilityIdentifier("pane-output")
             }
         }
@@ -464,10 +591,19 @@ struct PaneTerminalView: View {
                     .padding(.top, 8)
             }
         }
+        // The grid zooms itself (UIKit); this is the text size for the others.
         .simultaneousGesture(
             MagnifyGesture()
                 .updating($pinch) { value, state, _ in state = value.magnification }
-                .onEnded { value in fontSize = min(20, max(7, (fontSize * value.magnification).rounded())) }
+                .updating($pinchAt) { value, state, _ in if state == nil { state = value.startLocation } }
+                .onEnded { value in
+                    if grid {
+                        zoomGrid(to: zoom * value.magnification, at: value.startLocation)
+                    } else {
+                        fontSize = min(20, max(7, (fontSize * value.magnification).rounded()))
+                    }
+                },
+            including: grid ? .subviews : .all
         )
         .onGeometryChange(for: CGSize.self) { $0.size } action: {
             width = $0.width
@@ -479,6 +615,17 @@ struct PaneTerminalView: View {
             await model.setFit(fitSize)
             await model.setLayout(fontSize: fontSize, wrapColumns: wrapColumns, paneColumns: paneColumns, agentPane: agentPane)
             await model.watch(paneId, agent: agent, client: client)
+        }
+        .onDisappear { zoom = 1 }
+        // Once the agent stops: history asked for while it worked, or herdr's own
+        // in place of the rows kept as they scrolled by.
+        .onChange(of: agentWorking) { _, working in
+            guard !working else { return }
+            if model.historyState == .busy {
+                Task { await loadEarlier() }
+            } else if model.historyCaptured {
+                Task { await loadEarlier(refresh: true) }
+            }
         }
         // Settle first: the keyboard and a pinch pass through sizes on the way.
         .task(id: fitSize) {
@@ -495,10 +642,10 @@ struct PaneTerminalView: View {
 
     /// Fetches earlier output without moving what you're reading: the new
     /// rows land above, ready to scroll up through.
-    private func loadEarlier() async {
+    private func loadEarlier(refresh: Bool = false) async {
         guard let client = store.client, heldTop == nil else { return }
         heldTop = max(spot.top, 0) - historyHeight
-        await model.loadEarlier(paneId, agent: agent, client: client)
+        await model.loadEarlier(paneId, agent: agent, client: client, refresh: refresh)
         // Keep holding while the new rows lay out; each height change re-pins.
         try? await Task.sleep(for: .milliseconds(300))
         heldTop = nil
@@ -537,6 +684,10 @@ struct PaneTerminalView: View {
         /// Top edge of the viewport in content coordinates.
         var top: CGFloat = 0
         var inset: CGFloat = 0
+        /// Left edge of the viewport in content coordinates (the zoomed grid).
+        var left: CGFloat = 0
+        var contentWidth: CGFloat = 0
+        var contentHeight: CGFloat = 0
     }
 
     private struct LayoutKey: Equatable {
@@ -628,6 +779,7 @@ private struct PaneMenu: View {
 /// Top of a pane's output: load (more) earlier output, or say why there's none.
 private struct HistoryHeader: View {
     let state: TerminalModel.HistoryState
+    let agent: String
     let load: () -> Void
 
     var body: some View {
@@ -644,6 +796,11 @@ private struct HistoryHeader: View {
                 note("Start of available output")
             case .empty:
                 note("No earlier output")
+            case .busy:
+                VStack(spacing: 4) {
+                    note("Earlier output loads once \(agent) is idle")
+                    button("Try now")
+                }
             case .failed(let message):
                 VStack(spacing: 4) {
                     note(message)

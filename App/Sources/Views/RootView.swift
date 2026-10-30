@@ -89,7 +89,12 @@ struct RootView: View {
                 .zIndex(1)
             }
         }
-        .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { landscape = $0 }
+        // The whole screen, not the space above the keyboard: with it up, a
+        // portrait screen's leftover is wider than tall.
+        .background {
+            Color.clear.ignoresSafeArea()
+                .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { landscape = $0 }
+        }
         // A phone in portrait: the status bar is a band across the top, lines
         // lost over a terminal. In landscape it sits in the side column.
         .statusBarHidden(UIDevice.current.userInterfaceIdiom == .phone && route != nil && !landscape)

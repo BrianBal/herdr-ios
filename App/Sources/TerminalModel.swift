@@ -11,7 +11,7 @@ enum TerminalRenderer {
         Color(red: Double(c.r) / 255, green: Double(c.g) / 255, blue: Double(c.b) / 255)
     }
 
-    private static func blend(_ a: RGB, _ b: RGB, _ t: Double) -> RGB {
+    static func blend(_ a: RGB, _ b: RGB, _ t: Double) -> RGB {
         func mix(_ x: UInt8, _ y: UInt8) -> UInt8 { UInt8((Double(x) * (1 - t) + Double(y) * t).rounded()) }
         return RGB(mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b))
     }
@@ -110,11 +110,18 @@ final class TerminalModel {
     /// History meets the screen exactly (a Claude transcript joined by
     /// message), rather than stitched on by matching text.
     private(set) var historyJoined = false
-    private var historyLines: [StyledLine] = []
+    /// Earlier rows as the screen drew them (not for Claude's transcript).
+    private(set) var historyLines: [StyledLine] = []
     /// History lines are whole paragraphs (Claude's transcript), not screen rows.
     private var historyLogical = false
     /// Lines asked for last time; each "load more" doubles it.
     private var historyRequest = 0
+    /// History has rows kept as they scrolled off the screen since herdr's last
+    /// answer: worth asking again, for the real thing, once the agent's idle.
+    private(set) var historyCaptured = false
+    /// What scrolled off while a load was in flight, to go after its answer.
+    private var capturedDuringLoad: [StyledLine] = []
+    static let capturedMaxLines = 20000
 
     enum HistoryState: Equatable {
         case none
@@ -123,6 +130,9 @@ final class TerminalModel {
         case loaded(more: Bool)
         /// Asked, but there was nothing before the screen.
         case empty
+        /// herdr can't read a full-screen agent's history while it's working
+        /// (it scrolls the agent to capture it): asked again once it's idle.
+        case busy
         case failed(String)
     }
 
@@ -130,7 +140,8 @@ final class TerminalModel {
     static let historyMaxRequest = 16000
     private(set) var status: Status = .loading
     private(set) var lastFrameAt: Date?
-    private var lines: [StyledLine] = []
+    /// The live screen's rows.
+    private(set) var lines: [StyledLine] = []
     private var fontSize: CGFloat = 11
     /// Visible columns when wrapping (nil when not wrapping); separators are clipped to it.
     private var wrapColumns: Int?
@@ -162,6 +173,10 @@ final class TerminalModel {
     static let gapFillLines = 300
 
     private var usesTranscript: Bool { following && timeline.hasBlocks }
+    /// History is Claude's transcript (paragraphs, wrapped to the screen), not screen rows.
+    var historyIsTranscript: Bool { usesTranscript }
+    /// The live screen's rows as shown: with a transcript, from where it takes over.
+    var screenRows: [StyledLine] { cut.map { Array(lines[min($0.line, lines.count)...]) } ?? lines }
 
     var isEmpty: Bool { segments.isEmpty }
 
@@ -223,8 +238,10 @@ final class TerminalModel {
             for try await frame in frames {
                 let parsed = await Task.detached(priority: .userInitiated) { ANSIParser.parse(frame.text) }.value
                 guard activeWatch == token else { return }
+                let scrolled = usesTranscript ? nil : Scrollback.scrolledOff(from: lines, to: parsed)
                 lines = parsed
                 screenText = frame.text
+                if let scrolled { await keep(scrolledOff: scrolled) }
                 await joinScreen()
                 await rerender()
                 lastFrameAt = .now
@@ -253,6 +270,7 @@ final class TerminalModel {
         firstLines = timeline.blocks.map { parsed[$0.id]?.lines.first?.plainText ?? "" }
         if usesTranscript {
             historyLines = []
+            historyCaptured = false
             historyState = .loaded(more: false)
         } else if update.reset == true, historyState != .loading {
             // No session (yet): back to loading earlier output on request.
@@ -307,16 +325,20 @@ final class TerminalModel {
 
     /// Loads output from before the current screen (or more of it).
     /// `agent` is the pane's agent kind, if any ("claude" reads Claude's transcript).
-    func loadEarlier(_ paneId: String, agent: String?, client: GatewayClient) async {
+    /// `refresh` asks for as much as last time, to replace rows kept as they scrolled by.
+    func loadEarlier(_ paneId: String, agent: String?, client: GatewayClient, refresh: Bool = false) async {
         guard historyState != .loading else { return }
         if usesTranscript {
             // Pull to refresh at the top: the top gap, if any.
             if case .gap(let gap)? = timeline.items.first { await fillGap(gap) }
             return
         }
-        let request = historyRequest == 0 ? Self.historyFirstRequest : min(historyRequest * 2, Self.historyMaxRequest)
-        let previousCount = historyLines.count
+        let request = historyRequest == 0 ? Self.historyFirstRequest
+            : refresh ? historyRequest : min(historyRequest * 2, Self.historyMaxRequest)
+        let previousCount = historyCaptured ? 0 : historyLines.count
+        let stateBefore = historyState
         historyState = .loading
+        capturedDuringLoad = []
         do {
             let (text, truncated, logical) = try await client.history(paneId: paneId, agent: agent, lines: request)
             historyLogical = logical
@@ -327,17 +349,45 @@ final class TerminalModel {
             // The transcript arrived meanwhile and took over.
             guard !usesTranscript else { return }
             historyRequest = request
-            historyLines = earlier
+            // The answer ends at the screen as it was when asked; what's
+            // scrolled off since goes after it.
+            historyLines = earlier + capturedDuringLoad
+            historyCaptured = !capturedDuringLoad.isEmpty
+            capturedDuringLoad = []
             await rerenderHistory()
-            if earlier.isEmpty {
+            if historyLines.isEmpty {
                 emptyScreen = (visible, .now)
                 historyState = .empty
             } else {
                 historyState = .loaded(more: truncated && request < Self.historyMaxRequest && earlier.count > previousCount)
             }
+        } catch GatewayError.server(code: "agent_not_idle", _) {
+            if !usesTranscript { historyState = refresh ? stateBefore : .busy }
+            await keepCapturedDuringLoad()
         } catch {
-            if !usesTranscript { historyState = .failed(error.localizedDescription) }
+            if !usesTranscript { historyState = refresh ? stateBefore : .failed(error.localizedDescription) }
+            await keepCapturedDuringLoad()
         }
+    }
+
+    /// Keeps rows that scrolled off the top as history, as they go: herdr can't
+    /// read a full-screen agent's scrollback while it works, and between loads
+    /// a shell's grows too. The next load replaces them with herdr's own.
+    private func keep(scrolledOff rows: [StyledLine]) async {
+        if historyState == .loading {
+            capturedDuringLoad += rows
+            return
+        }
+        historyLines += rows
+        if historyLines.count > Self.capturedMaxLines { historyLines.removeFirst(historyLines.count - Self.capturedMaxLines) }
+        historyCaptured = true
+        await rerenderHistory()
+    }
+
+    private func keepCapturedDuringLoad() async {
+        let rows = capturedDuringLoad
+        capturedDuringLoad = []
+        if !rows.isEmpty { await keep(scrolledOff: rows) }
     }
 
     /// Fits the pane to this screen (or gives it back with nil), like a smaller

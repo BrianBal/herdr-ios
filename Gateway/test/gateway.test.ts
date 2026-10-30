@@ -62,6 +62,7 @@ const fakeHerdr = Bun.listen<{ buf: string }>({
               type: "session_snapshot",
               snapshot: {
                 workspaces: [{ workspace_id: "w1", label: "html-gen" }],
+                layouts: [{ workspace_id: "w1", tab_id: "w1:t1", panes: [{ pane_id: "w1:p1", rect: { x: 0, y: 0, width: 70, height: 40 } }] }],
                 panes: [
                   { pane_id: "w1:p1", workspace_id: "w1", agent: "claude", agent_status: agentStatus, terminal_title_stripped: "Fix the charts" },
                   { pane_id: "w1:p2", workspace_id: "w1", agent_status: "unknown" },
@@ -292,6 +293,7 @@ describe("pane watch", () => {
     expect(fitLines()).toEqual([
       "terminal session control w1:p1 --takeover --cols 44 --rows 300", // rows clamped
       JSON.stringify({ type: "terminal.resize", cols: 60, rows: 30 }),
+      JSON.stringify({ type: "terminal.resize", cols: 70, rows: 40 }), // back to its split
       JSON.stringify({ type: "terminal.release" }),
       "EOF",
     ]);
